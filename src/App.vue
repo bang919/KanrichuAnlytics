@@ -2025,6 +2025,188 @@ const formatNumber = (num) => {
   if (num === null || num === undefined) return 0;
   return parseFloat(num).toFixed(2);
 };
+
+// 删除发货模版中的项目
+const deleteShippingItem = (row, index) => {
+  if (!processedTemplates.value.shippingTemplate || !processedTemplates.value.shippingTemplate.workbook ||
+      !processedTemplates.value.backendShippingTemplate || !processedTemplates.value.backendShippingTemplate.workbook) {
+    ElMessage.error('无法删除，模板数据不完整');
+    return;
+  }
+
+  try {
+    // 1. 从发货模版中删除
+    const shippingWorksheet = processedTemplates.value.shippingTemplate.workbook.worksheets[0];
+    
+    // 找到匹配的行并删除
+    let shippingRowToDelete = -1;
+    for (let rowNumber = 2; rowNumber <= shippingWorksheet.rowCount; rowNumber++) {
+      const currentRow = shippingWorksheet.getRow(rowNumber);
+      
+      // 读取当前行的数据
+      const name = currentRow.getCell(1).value;
+      if (!name) continue;
+      
+      const fnsku = currentRow.getCell(2).value;
+      
+      // 通过比较名称和FNSKU确定是否是要删除的行
+      if (String(name) === String(row.name) && String(fnsku) === String(row.fnsku)) {
+        shippingRowToDelete = rowNumber;
+        break;
+      }
+    }
+    
+    // 如果找到了匹配的行，删除它并移动后面的行
+    if (shippingRowToDelete > 0) {
+      shippingWorksheet.spliceRows(shippingRowToDelete, 1);
+    }
+    
+    // 2. 从后台发货模版中删除
+    const backendWorksheet = processedTemplates.value.backendShippingTemplate.workbook.getWorksheet("Create workflow – template");
+    if (!backendWorksheet) {
+      throw new Error('找不到后台发货模版的工作表');
+    }
+    
+    // 在后台发货模版中查找匹配的行 (通过SKU和数量比较)
+    let backendRowToDelete = -1;
+    // 后台模版从第9行开始
+    for (let rowNumber = 9; rowNumber <= backendWorksheet.rowCount; rowNumber++) {
+      const currentRow = backendWorksheet.getRow(rowNumber);
+      const merchantSku = currentRow.getCell(1).value;
+      const quantity = currentRow.getCell(2).value;
+      const unitsPerBox = currentRow.getCell(5).value;
+      
+      // 如果SKU为空，跳过该行
+      if (!merchantSku) continue;
+      
+      // 比较数量和每箱数量确定是否是要删除的行
+      if (Number(quantity) === Number(row.shippingQuantity) && Number(unitsPerBox) === Number(row.boxQuantity)) {
+        backendRowToDelete = rowNumber;
+        break;
+      }
+    }
+    
+    // 如果找到了匹配的行，删除它
+    if (backendRowToDelete > 0) {
+      backendWorksheet.spliceRows(backendRowToDelete, 1);
+    }
+    
+    // 3. 更新两个模版的buffer
+    Promise.all([
+      processedTemplates.value.shippingTemplate.workbook.xlsx.writeBuffer(),
+      processedTemplates.value.backendShippingTemplate.workbook.xlsx.writeBuffer()
+    ]).then(([shippingBuffer, backendBuffer]) => {
+      processedTemplates.value.shippingTemplate.buffer = shippingBuffer;
+      processedTemplates.value.backendShippingTemplate.buffer = backendBuffer;
+      
+      ElMessage.success('成功删除发货项!');
+    });
+  } catch (error) {
+    console.error('删除发货项时出错:', error);
+    ElMessage.error(`删除发货项时出错: ${error.message}`);
+  }
+};
+
+// 将发货项调整为5箱
+const makeItFiveBoxes = (row, index) => {
+  if (!processedTemplates.value.shippingTemplate || !processedTemplates.value.shippingTemplate.workbook ||
+      !processedTemplates.value.backendShippingTemplate || !processedTemplates.value.backendShippingTemplate.workbook) {
+    ElMessage.error('无法调整，模板数据不完整');
+    return;
+  }
+
+  try {
+    // 1. 更新发货模版中的数据
+    const shippingWorksheet = processedTemplates.value.shippingTemplate.workbook.worksheets[0];
+    
+    // 找到匹配的行
+    let shippingRowToUpdate = -1;
+    for (let rowNumber = 2; rowNumber <= shippingWorksheet.rowCount; rowNumber++) {
+      const currentRow = shippingWorksheet.getRow(rowNumber);
+      
+      // 读取当前行的数据
+      const name = currentRow.getCell(1).value;
+      if (!name) continue;
+      
+      const fnsku = currentRow.getCell(2).value;
+      
+      // 通过比较名称和FNSKU确定是否是要更新的行
+      if (String(name) === String(row.name) && String(fnsku) === String(row.fnsku)) {
+        shippingRowToUpdate = rowNumber;
+        break;
+      }
+    }
+    
+    // 如果找到了匹配的行，更新箱数和发货数量
+    if (shippingRowToUpdate > 0) {
+      const currentRow = shippingWorksheet.getRow(shippingRowToUpdate);
+      const boxQuantity = Number(currentRow.getCell(3).value || 0);
+      
+      // 更新发货数量为 boxQuantity * 5
+      const newShippingQuantity = boxQuantity * 5;
+      currentRow.getCell(4).value = newShippingQuantity;
+      
+      // 更新总箱数为5
+      currentRow.getCell(5).value = 5;
+    }
+    
+    // 2. 从后台发货模版中更新
+    const backendWorksheet = processedTemplates.value.backendShippingTemplate.workbook.getWorksheet("Create workflow – template");
+    if (!backendWorksheet) {
+      throw new Error('找不到后台发货模版的工作表');
+    }
+    
+    // 在后台发货模版中查找匹配的行 (通过SKU和数量比较)
+    let backendRowToUpdate = -1;
+    // 后台模版从第9行开始
+    for (let rowNumber = 9; rowNumber <= backendWorksheet.rowCount; rowNumber++) {
+      const currentRow = backendWorksheet.getRow(rowNumber);
+      const merchantSku = currentRow.getCell(1).value;
+      const quantity = currentRow.getCell(2).value;
+      const unitsPerBox = currentRow.getCell(5).value;
+      
+      // 如果SKU为空，跳过该行
+      if (!merchantSku) continue;
+      
+      // 比较数量和每箱数量确定是否是要更新的行
+      if (Number(quantity) === Number(row.shippingQuantity) && Number(unitsPerBox) === Number(row.boxQuantity)) {
+        backendRowToUpdate = rowNumber;
+        break;
+      }
+    }
+    
+    // 如果找到了匹配的行，更新它
+    if (backendRowToUpdate > 0) {
+      const currentRow = backendWorksheet.getRow(backendRowToUpdate);
+      const unitsPerBox = Number(currentRow.getCell(5).value || 0);
+      
+      // 更新发货数量为 unitsPerBox * 5
+      const newShippingQuantity = unitsPerBox * 5;
+      currentRow.getCell(2).value = newShippingQuantity;
+      
+      // 计算更新后的箱数 (列6是箱数)
+      currentRow.getCell(6).value = 5;
+    }
+    
+    // 3. 更新两个模版的buffer
+    Promise.all([
+      processedTemplates.value.shippingTemplate.workbook.xlsx.writeBuffer(),
+      processedTemplates.value.backendShippingTemplate.workbook.xlsx.writeBuffer()
+    ]).then(([shippingBuffer, backendBuffer]) => {
+      processedTemplates.value.shippingTemplate.buffer = shippingBuffer;
+      processedTemplates.value.backendShippingTemplate.buffer = backendBuffer;
+      
+      // 更新UI上的数据
+      const updatedItems = getShippingPreviewData();
+      processedData.value.shippingPreviewData = updatedItems;
+      
+      ElMessage.success('成功调整为5箱!');
+    });
+  } catch (error) {
+    console.error('调整箱数时出错:', error);
+    ElMessage.error(`调整箱数时出错: ${error.message}`);
+  }
+};
 </script>
 
 <template>
@@ -2324,11 +2506,12 @@ const formatNumber = (num) => {
                   <table class="template-table">
                     <thead>
                       <tr>
-                        <th width="30%">名称</th>
-                        <th width="20%">FNSKU</th>
+                        <th width="25%">名称</th>
+                        <th width="18%">FNSKU</th>
                         <th width="15%">每箱数量</th>
                         <th width="15%">发货数量</th>
-                        <th width="20%">共多少箱</th>
+                        <th width="17%">共多少箱</th>
+                        <th width="10%">操作</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2338,9 +2521,15 @@ const formatNumber = (num) => {
                         <td>{{ row.boxQuantity || 0 }}</td>
                         <td class="shipping-qty">{{ row.shippingQuantity || 0 }}</td>
                         <td>{{ row.boxCount || 0 }}</td>
+                        <td>
+                          <div class="action-buttons">
+                            <el-button size="small" type="danger" @click="deleteShippingItem(row, index)">删除</el-button>
+                            <el-button size="small" type="primary" @click="makeItFiveBoxes(row, index)">凑5箱</el-button>
+                          </div>
+                        </td>
                       </tr>
                       <tr v-if="getShippingPreviewData().length === 0">
-                        <td colspan="5" class="no-data">没有需要发货的产品</td>
+                        <td colspan="6" class="no-data">没有需要发货的产品</td>
                       </tr>
                     </tbody>
                   </table>
@@ -3093,4 +3282,9 @@ body {
   text-align: left;
   padding-left: 12px;
 } */
+
+.action-buttons {
+  display: flex;
+  gap: 5px;
+}
 </style>
