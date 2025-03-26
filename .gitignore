@@ -8,7 +8,7 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
-dist
+# dist  # 注释掉，允许提交dist目录
 dist-ssr
 *.local
 
