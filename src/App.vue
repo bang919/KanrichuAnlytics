@@ -272,7 +272,7 @@ const processFiles = () => {
     });
       
       uploading.value = false;
-    uploadStep.value = 2;
+    uploadStep.value = 2; // 处理完成后进入第二步：查看处理后的库存表
     }).catch(error => {
       uploading.value = false;
       ElMessage({
@@ -889,8 +889,21 @@ const generateResultFile = async () => {
       // 遍历所有有效ASIN行
       for (const rowNumber of validRowNumbers) {
         const row = worksheet.getRow(rowNumber);
-        const asinCell = row.getCell(2);
-        const asin = String(asinCell.value).trim();
+        const asin = String(row.getCell(2).value).trim().toUpperCase(); // ASIN
+        
+        // 更新工厂库存（第4列）
+        const inventoryCell = row.getCell(4);
+        if (processedData.value.inventoryMap && processedData.value.inventoryMap[asin] !== undefined) {
+          const factoryInventory = processedData.value.inventoryMap[asin];
+          inventoryCell.value = factoryInventory;
+          updatedFactoryCount++;
+          console.log(`已更新 ASIN ${asin} 的工厂库存为 ${factoryInventory}`);
+        } else {
+          // 如果没有匹配到喜悦库存数据，设置为0
+          inventoryCell.value = 0;
+          updatedFactoryCount++;
+          console.log(`未找到 ASIN ${asin} 的工厂库存数据，设置为0`);
+        }
         
         // 更新FBA库存（第3列）
         const fbaCell = row.getCell(3);
@@ -904,20 +917,6 @@ const generateResultFile = async () => {
           fbaCell.value = 0;
           updatedFBACount++;
           console.log(`未找到 ASIN ${asin} 的FBA库存数据，设置为0`);
-        }
-        
-        // 更新工厂库存（第4列）
-        const inventoryCell = row.getCell(4);
-        if (processedData.value.inventoryMap && processedData.value.inventoryMap[asin] !== undefined) {
-          const inventory = processedData.value.inventoryMap[asin];
-          inventoryCell.value = inventory;
-          updatedFactoryCount++;
-          console.log(`已更新 ASIN ${asin} 的工厂库存为 ${inventory}`);
-        } else {
-          // 如果没有匹配到工厂库存数据，设置为0
-          inventoryCell.value = 0;
-          updatedFactoryCount++;
-          console.log(`未找到 ASIN ${asin} 的工厂库存数据，设置为0`);
         }
         
         // 更新7天平均销量（第6列）
@@ -963,7 +962,7 @@ const generateResultFile = async () => {
         const sevenDayAvg = Number(sevenDayCell.value || 0);  // F列(6)
         const thirtyDayAvg = Number(thirtyDayCell.value || 0); // G列(7)
         const finalAvgCell = row.getCell(9);  // I列
-        const finalAvg = Math.max(sevenDayAvg, thirtyDayAvg) * 1.375;
+        const finalAvg = parseFloat((Math.max(sevenDayAvg, thirtyDayAvg) * 1.375).toFixed(2));
         finalAvgCell.value = finalAvg;
         console.log(`已更新 ASIN ${asin} 的最终每天平均为 ${finalAvg} (MAX(${sevenDayAvg}, ${thirtyDayAvg})*1.375)`);
 
@@ -978,6 +977,55 @@ const generateResultFile = async () => {
         const totalRotation = finalAvg > 0 ? totalInventory / finalAvg : 0;
         totalRotationCell.value = totalRotation;
         console.log(`已更新 ASIN ${asin} 的总周转为 ${totalRotation} (${totalInventory}/${finalAvg})`);
+
+        // 获取T列(装箱数量)的值
+        const tValue = Number(row.getCell(20).value || 36);
+
+        // 计算U列 - 90天补货
+        if(row.getCell(21).value !== null) {
+          const uValue = Math.ceil(Math.max(0, 90 - Math.max(totalRotation, 60)) * finalAvg / tValue) * tValue;
+          // 对于0值，使用一个特殊字符串来确保它显示在Excel中
+          row.getCell(21).value = uValue === 0 ? "0" : uValue;
+          console.log(`已更新 ASIN ${asin} 的90天补货为 ${uValue}`);
+        }
+
+        // 计算V列 - 120天补货(主推款)
+        if(row.getCell(22).value !== null) {
+          const vValue = Math.ceil(Math.max(0, 120 - Math.max(totalRotation, 60)) * finalAvg / tValue) * tValue;
+          row.getCell(22).value = vValue === 0 ? "0" : vValue;
+          console.log(`已更新 ASIN ${asin} 的120天补货为 ${vValue}`);
+        }
+
+        // 计算W列 - 135天补货(特推款)
+        if(row.getCell(23).value !== null) {
+          const wValue = Math.ceil(Math.max(0, 135 - Math.max(totalRotation, 60)) * finalAvg / tValue) * tValue;
+          row.getCell(23).value = wValue === 0 ? "0" : wValue;
+          console.log(`已更新 ASIN ${asin} 的135天补货为 ${wValue}`);
+        }
+
+        // 计算X列 - 70天发货
+        if(row.getCell(24).value !== null) {
+          const xBaseValue = Math.ceil(Math.max(0, 70 - Math.max(fbaRotation, 30)) * finalAvg / tValue) * tValue;
+          const xValue = Math.min(xBaseValue, factoryInventory);
+          row.getCell(24).value = xValue === 0 ? "0" : xValue;
+          console.log(`已更新 ASIN ${asin} 的70天发货为 ${xValue}`);
+        }
+
+        // 计算Y列 - 100天发货(主推款)
+        if(row.getCell(25).value !== null) {
+          const yBaseValue = Math.ceil(Math.max(0, 100 - Math.max(fbaRotation, 30)) * finalAvg / tValue) * tValue;
+          const yValue = Math.min(yBaseValue, factoryInventory);
+          row.getCell(25).value = yValue === 0 ? "0" : yValue;
+          console.log(`已更新 ASIN ${asin} 的100天发货为 ${yValue}`);
+        }
+
+        // 计算Z列 - 115天发货(特推款)
+        if(row.getCell(26).value !== null) {
+          const zBaseValue = Math.ceil(Math.max(0, 115 - Math.max(fbaRotation, 30)) * finalAvg / tValue) * tValue;
+          const zValue = Math.min(zBaseValue, factoryInventory);
+          row.getCell(26).value = zValue === 0 ? "0" : zValue;
+          console.log(`已更新 ASIN ${asin} 的115天发货为 ${zValue}`);
+        }
       }
       
       // 记录统计结果
@@ -995,259 +1043,34 @@ const generateResultFile = async () => {
       if (processedData.value.inventoryMap && processedData.value.nameMap) {
         for (const key in processedData.value.inventoryMap) {
           const inventory = processedData.value.inventoryMap[key];
+          const name = processedData.value.nameMap[key] || '';
           
-          // 只添加库存数量为0的未匹配产品
+          // 只添加库存数量大于0的未匹配产品
           if (inventory > 0) {
-            // 检查是否是有ASIN的产品并且在产品库存表中未找到
-            if (!key.startsWith('NO_ASIN_') && !foundAsins.has(key.toUpperCase())) {
-              const name = processedData.value.nameMap[key] || '未知';
-              
-              // 添加到未匹配列表
+            // 检查是否是无ASIN的产品（以NO_ASIN_开头）
+            if (key.startsWith('NO_ASIN_')) {
+              // 这是没有ASIN但有名称的产品
               processedData.value.unmatchedAsins.push({
-                asin: key,
-                name,
-                inventory
+                asin: '', // 显示为空字符串
+                name: name,
+                inventory: inventory
               });
-              
-              console.log(`ASIN ${key} (${name})在喜悦库存中存在但在产品库存表中未找到，库存值: ${inventory}`);
-            }
-            // 处理没有ASIN但有名称的情况
-            else if (key.startsWith('NO_ASIN_')) {
-              const name = processedData.value.nameMap[key] || '未知';
-              
-              // 添加到未匹配列表
-              processedData.value.unmatchedAsins.push({
-                asin: null, // 显示为null
-                name,
-                inventory
-              });
-              
               console.log(`无ASIN产品 (${name})在喜悦库存中存在但在产品库存表中未找到，库存值: ${inventory}`);
             }
-          }
-        }
-      }
-      
-      console.log(`发现${processedData.value.unmatchedAsins.length}个未匹配的产品`);
-      
-      // 尝试触发工作簿中的公式重新计算
-      try {
-        // ExcelJS不支持公式计算，我们将完全使用JavaScript计算
-        console.log("开始使用JavaScript手动计算所有公式...");
-        
-        // 使用现有的工作簿，不再尝试刷新
-        const calculatedWorksheet = workbook.worksheets[0];
-        
-        // 遍历有效ASIN行，进行手动计算
-        for (const rowNumber of validRowNumbers) {
-          const row = calculatedWorksheet.getRow(rowNumber);
-          
-          // 读取ASIN和产品名称
-          const asin = String(row.getCell(2).value || '').trim();
-          
-          // 读取所需数据 - 全部转换为数字
-          const fbaInventory = Number(row.getCell(3).value || 0);  // C列(FBA库存)
-          const factoryInventory = Number(row.getCell(4).value || 0);  // D列(工厂库存)
-          const totalInventory = Number(row.getCell(5).value || 0);  // E列(总库存)
-          const sevenDayAvg = Number(row.getCell(6).value || 0);  // F列(7天平均)
-          const thirtyDayAvg = Number(row.getCell(7).value || 0); // G列(30天平均)
-          const tValue = Number(row.getCell(20).value || 36); // T列(产箱数量)
-          
-          // 计算I列(最终每天平均) = MAX(F列,G列)*1.375
-          const finalAvg = Math.max(sevenDayAvg, thirtyDayAvg) * 1.375;
-          row.getCell(9).value = finalAvg;  // I列
-          
-          // 计算J列(FBA周转) = C列/I列
-          const fbaRotation = finalAvg > 0 ? fbaInventory / finalAvg : 0;
-          row.getCell(10).value = fbaRotation;  // J列
-          
-          // 计算K列(总周转) = E列/I列
-          const totalRotation = finalAvg > 0 ? totalInventory / finalAvg : 0;
-          row.getCell(11).value = totalRotation;  // K列
-          
-          // 手动计算U-Z列的值
-          console.log("开始使用JavaScript手动计算U-Z列的值...");
-          
-          // 检查单元格是否为空的辅助函数
-          const isCellEmpty = (cell) => {
-            return !cell || cell.value === null || cell.value === undefined || cell.value === '';
-          };
-          
-          // 计算U列 - 90天补货
-          // 公式: =CEILING(MAX(0,90-MAX(K{row},60))*I{row}/T{row},1)*T{row}
-          const uCell = row.getCell(21);
-          if (!isCellEmpty(uCell)) {
-            const uValue = Math.ceil(Math.max(0, 90 - Math.max(totalRotation, 60)) * finalAvg / tValue) * tValue;
-            uCell.value = uValue;
-            console.log(`计算 ASIN ${asin} 的U列: ${uValue} (使用公式: CEILING(MAX(0,90-MAX(${totalRotation},60))*${finalAvg}/${tValue},1)*${tValue})`);
-          } else {
-            console.log(`ASIN ${asin} 的U列为空，跳过计算`);
-          }
-          
-          // 计算V列 - 120天补货
-          // 公式: =CEILING(MAX(0,120-MAX(K{row},60))*I{row}/T{row},1)*T{row}
-          const vCell = row.getCell(22);
-          if (!isCellEmpty(vCell)) {
-            const vValue = Math.ceil(Math.max(0, 120 - Math.max(totalRotation, 60)) * finalAvg / tValue) * tValue;
-            vCell.value = vValue;
-            console.log(`计算 ASIN ${asin} 的V列: ${vValue} (使用公式: CEILING(MAX(0,120-MAX(${totalRotation},60))*${finalAvg}/${tValue},1)*${tValue})`);
-          } else {
-            console.log(`ASIN ${asin} 的V列为空，跳过计算`);
-          }
-          
-          // 计算W列 - 135天补货
-          // 公式: =CEILING(MAX(0,135-MAX(K{row},60))*I{row}/T{row},1)*T{row}
-          const wCell = row.getCell(23);
-          if (!isCellEmpty(wCell)) {
-            const wValue = Math.ceil(Math.max(0, 135 - Math.max(totalRotation, 60)) * finalAvg / tValue) * tValue;
-            wCell.value = wValue;
-            console.log(`计算 ASIN ${asin} 的W列: ${wValue} (使用公式: CEILING(MAX(0,135-MAX(${totalRotation},60))*${finalAvg}/${tValue},1)*${tValue})`);
-          } else {
-            console.log(`ASIN ${asin} 的W列为空，跳过计算`);
-          }
-          
-          // 计算X列 - 70天补货（与FBA周转比较）
-          // 公式: =MIN(CEILING(MAX(0,70-MAX(J{row},30))*I{row}/T{row},1)*T{row},D{row})
-          const xCell = row.getCell(24);
-          if (!isCellEmpty(xCell)) {
-            const xBaseValue = Math.ceil(Math.max(0, 70 - Math.max(fbaRotation, 30)) * finalAvg / tValue) * tValue;
-            const xValue = Math.min(xBaseValue, factoryInventory);
-            xCell.value = xValue;
-            console.log(`计算 ASIN ${asin} 的X列: ${xValue} (使用公式: MIN(CEILING(MAX(0,70-MAX(${fbaRotation},30))*${finalAvg}/${tValue},1)*${tValue},${factoryInventory}))`);
-          } else {
-            console.log(`ASIN ${asin} 的X列为空，跳过计算`);
-          }
-          
-          // 计算Y列 - 100天补货（与FBA周转比较）
-          // 公式: =MIN(CEILING(MAX(0,100-MAX(J{row},30))*I{row}/T{row},1)*T{row},D{row})
-          const yCell = row.getCell(25);
-          if (!isCellEmpty(yCell)) {
-            const yBaseValue = Math.ceil(Math.max(0, 100 - Math.max(fbaRotation, 30)) * finalAvg / tValue) * tValue;
-            const yValue = Math.min(yBaseValue, factoryInventory);
-            yCell.value = yValue;
-            console.log(`计算 ASIN ${asin} 的Y列: ${yValue} (使用公式: MIN(CEILING(MAX(0,100-MAX(${fbaRotation},30))*${finalAvg}/${tValue},1)*${tValue},${factoryInventory}))`);
-          } else {
-            console.log(`ASIN ${asin} 的Y列为空，跳过计算`);
-          }
-          
-          // 计算Z列 - 115天补货（与FBA周转比较）
-          // 公式: =MIN(CEILING(MAX(0,115-MAX(J{row},30))*I{row}/T{row},1)*T{row},D{row})
-          const zCell = row.getCell(26);
-          if (!isCellEmpty(zCell)) {
-            const zBaseValue = Math.ceil(Math.max(0, 115 - Math.max(fbaRotation, 30)) * finalAvg / tValue) * tValue;
-            const zValue = Math.min(zBaseValue, factoryInventory);
-            zCell.value = zValue;
-            console.log(`计算 ASIN ${asin} 的Z列: ${zValue} (使用公式: MIN(CEILING(MAX(0,115-MAX(${fbaRotation},30))*${finalAvg}/${tValue},1)*${tValue},${factoryInventory}))`);
-          } else {
-            console.log(`ASIN ${asin} 的Z列为空，跳过计算`);
-          }
-        }
-        
-        console.log("手动计算所有公式完成");
-        
-        // 修复可能的共享公式问题
-        try {
-          // 在保存前移除所有共享公式引用，转换为独立值
-          for (const worksheet of workbook.worksheets) {
-            worksheet.eachRow((row, rowNumber) => {
-              row.eachCell((cell, colNumber) => {
-                // 检查单元格是否包含共享公式
-                if (cell && cell.sharedFormula) {
-                  // 获取单元格当前的计算值
-                  const value = cell.value;
-                  // 移除共享公式引用，仅保留值
-                  cell.sharedFormula = undefined;
-                  cell.formula = undefined;
-                  // 重新设置值
-                  cell.value = value;
-                }
+            // 检查是否是有ASIN的产品但在产品库存表中未找到
+            else if (!foundAsins.has(key.toUpperCase())) {
+              processedData.value.unmatchedAsins.push({
+                asin: key,
+                name: name,
+                inventory: inventory
               });
-            });
+              console.log(`ASIN ${key} (${name})在喜悦库存中存在但在产品库存表中未找到，库存值: ${inventory}`);
+            }
           }
-          console.log("已处理所有共享公式引用");
-        } catch (error) {
-          console.error("处理共享公式时出错:", error);
         }
-        
-        // 步骤4：读取并输出计算后的数据
-        console.log("正在读取手动计算后的数据值...");
-        console.log("--------------------------核心数据--------------------------");
-        console.log("行号 | ASIN | 产品名称 | I列(最终每天平均) | J列(FBA周转) | K列(总周转) | U列(90天补货) | V列(主推款补货) | W列(特推款补货)");
-
-        // 遍历有效ASIN行
-        for (const rowNumber of validRowNumbers) {
-          const row = calculatedWorksheet.getRow(rowNumber);
-          
-          // 读取ASIN和产品名称
-          const asin = String(row.getCell(2).value || '').trim();
-          const productName = String(row.getCell(1).value || '').trim();
-          
-          // 直接读取单元格的值，不再处理公式结果对象
-          const iValue = row.getCell(9).value || '空';   // I列
-          const jValue = row.getCell(10).value || '空';  // J列
-          const kValue = row.getCell(11).value || '空';  // K列
-          const uValue = row.getCell(21).value || '空';  // U列
-          const vValue = row.getCell(22).value || '空';  // V列
-          const wValue = row.getCell(23).value || '空';  // W列
-          
-          // 将结果输出到控制台
-          console.log(`${rowNumber} | ${asin} | ${productName.substring(0, 8)}... | ${iValue} | ${jValue} | ${kValue} | ${uValue} | ${vValue} | ${wValue}`);
-        }
-
-        console.log("--------------------------数据读取完成--------------------------");
-
-        // 在第2行详细展示计算过程
-        try {
-          const row2 = calculatedWorksheet.getRow(2);
-          const asin2 = String(row2.getCell(2).value || '').trim();
-          const fbaInventory2 = Number(row2.getCell(3).value || 0);
-          const factoryInventory2 = Number(row2.getCell(4).value || 0);
-          const totalInventory2 = Number(row2.getCell(5).value || 0);
-          const sevenDayAvg2 = Number(row2.getCell(6).value || 0);
-          const thirtyDayAvg2 = Number(row2.getCell(7).value || 0);
-          const finalAvg2 = Number(row2.getCell(9).value || 0);
-          const fbaRotation2 = Number(row2.getCell(10).value || 0);
-          const totalRotation2 = Number(row2.getCell(11).value || 0);
-          const tValue2 = Number(row2.getCell(20).value || 36);
-          const wValue2 = Number(row2.getCell(23).value || 0);
-          
-          console.log(`\n第2行 (${asin2}) 的详细计算过程:`);
-          console.log(`C2(FBA库存) = ${fbaInventory2}`);
-          console.log(`D2(工厂库存) = ${factoryInventory2}`);
-          console.log(`E2(总库存) = ${totalInventory2}`);
-          console.log(`F2(7天平均) = ${sevenDayAvg2}`);
-          console.log(`G2(30天平均) = ${thirtyDayAvg2}`);
-          console.log(`I2(最终每天平均) = MAX(${sevenDayAvg2}, ${thirtyDayAvg2}) * 1.375 = ${finalAvg2}`);
-          console.log(`J2(FBA周转) = ${fbaInventory2} / ${finalAvg2} = ${fbaRotation2}`);
-          console.log(`K2(总周转) = ${totalInventory2} / ${finalAvg2} = ${totalRotation2}`);
-          console.log(`T2(产箱数量) = ${tValue2}`);
-          
-          // W2计算过程 
-          const maxK60 = Math.max(totalRotation2, 60);
-          const maxDiff = Math.max(0, 135 - maxK60);
-          const ratio = maxDiff * finalAvg2 / tValue2;
-          const calculatedW2 = Math.ceil(ratio) * tValue2;
-          
-          console.log(`W2(特推款补货) 计算过程:`);
-          console.log(`  CEILING(MAX(0,135-MAX(${totalRotation2},60))*${finalAvg2}/${tValue2},1)*${tValue2}`);
-          console.log(`  = CEILING(MAX(0,135-${maxK60})*${finalAvg2}/${tValue2},1)*${tValue2}`);
-          console.log(`  = CEILING(${maxDiff}*${finalAvg2}/${tValue2},1)*${tValue2}`);
-          console.log(`  = CEILING(${ratio},1)*${tValue2}`);
-          console.log(`  = ${Math.ceil(ratio)}*${tValue2}`);
-          console.log(`  = ${calculatedW2}`);
-          console.log(`  实际W2值 = ${wValue2}`);
-          
-          if (Math.abs(calculatedW2 - wValue2) < 0.01) {
-            console.log(`✅ W2计算结果正确!`);
-          } else {
-            console.log(`❌ W2计算结果有误! 应为 ${calculatedW2}, 实际为 ${wValue2}`);
-          }
-        } catch (error) {
-          console.error('读取计算详情时出错:', error);
-        }
-      } catch (error) {
-        console.error("手动计算公式时出错:", error);
       }
+      
+      console.log(`找到${processedData.value.unmatchedAsins.length}个未匹配的产品`);
       
       // 将工作簿转换为二进制数据
       const buffer = await workbook.xlsx.writeBuffer();
@@ -1272,22 +1095,22 @@ const generateResultFile = async () => {
     });
   }
 
-  // 处理补货模版和发货模版
-  try {
-    console.log("开始生成补货模版和发货模版...");
-    await Promise.all([
-      generateReplenishmentTemplate(),
-      generateShippingTemplate(),
-      generateBackendShippingTemplate()
-    ]);
-    console.log("所有模版生成完成");
-  } catch (templateError) {
-    console.error("生成模版文件时出错:", templateError);
-    ElMessage({
-      message: `生成模版文件时出错: ${templateError.message}`,
-    type: 'warning'
-    });
-  }
+  // 移除这部分代码，改为在点击"下一步"按钮时执行
+  // try {
+  //   console.log("开始生成补货模版和发货模版...");
+  //   await Promise.all([
+  //     generateReplenishmentTemplate(),
+  //     generateShippingTemplate(),
+  //     generateBackendShippingTemplate()
+  //   ]);
+  //   console.log("所有模版生成完成");
+  // } catch (templateError) {
+  //   console.error("生成模版文件时出错:", templateError);
+  //   ElMessage({
+  //     message: `生成模版文件时出错: ${templateError.message}`,
+  //   type: 'warning'
+  //   });
+  // }
 };
 
 // 生成补货模版
@@ -1693,7 +1516,7 @@ const downloadReplenishmentTemplate = () => {
     if (!processedTemplates.value.replenishmentTemplate || !processedTemplates.value.replenishmentTemplate.buffer) {
     ElMessage({
         message: '没有可下载的补货模版',
-        type: 'warning'
+    type: 'warning'
       });
       return;
     }
@@ -1722,7 +1545,7 @@ const downloadReplenishmentTemplate = () => {
 const downloadShippingTemplate = () => {
   try {
     if (!processedTemplates.value.shippingTemplate || !processedTemplates.value.shippingTemplate.buffer) {
-      ElMessage({
+    ElMessage({
         message: '没有可下载的发货模版',
         type: 'warning'
       });
@@ -1783,31 +1606,152 @@ const downloadBackendShippingTemplate = () => {
 // 下载生成的文件 - 使用ExcelJS生成的文件
 const downloadResultFile = () => {
   try {
-    if (!resultFileData.value || !resultFileData.value.buffer) {
+    if (!resultFileData.value || !resultFileData.value.workbook) {
       ElMessage({
         message: '没有可下载的文件',
         type: 'warning'
       });
       return;
     }
+
+    // 备份原始工作簿
+    const originalWorkbook = resultFileData.value.workbook;
     
-    // 创建Blob对象
-    const blob = new Blob([resultFileData.value.buffer], { 
-      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
-    });
-    
-    // 使用FileSaver.js下载文件
-    FileSaver.saveAs(blob, resultFileData.value.fileName);
-    
-    ElMessage({
-      message: '文件下载成功！',
-      type: 'success'
+    // 克隆工作簿以避免修改原始数据
+    originalWorkbook.xlsx.writeBuffer().then(buffer => {
+      // 从buffer重新加载一个新的工作簿用于导出
+      const workbook = new ExcelJS.Workbook();
+      workbook.xlsx.load(buffer).then(() => {
+        const worksheet = workbook.worksheets[0];
+        
+        console.log("正在准备导出文件...");
+        
+        // 对每行进行处理
+        for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
+          const row = worksheet.getRow(rowNumber);
+          
+          // 检查是否是有效的ASIN行
+          const asinCell = row.getCell(2); // ASIN列
+          if (!asinCell || !asinCell.value) continue;
+          
+          const asin = String(asinCell.value).trim();
+          if (!asin.match(/^B[\dA-Z]{9,}/i)) continue;
+          
+          // 处理U-Z列（列索引21-26）
+          for (let colIndex = 21; colIndex <= 26; colIndex++) {
+            const cell = row.getCell(colIndex);
+            
+            // 检查单元格原始内容
+            if (cell.value === null || cell.value === undefined) {
+              // 如果单元格确实为空，强制设置为空
+              cell.value = null;
+            } 
+            else if (cell.value === 0 || (typeof cell.value === 'number' && Math.abs(cell.value) < 0.001)) {
+              // 对于0值，设置为字符串"0"以确保显示
+              cell.value = "0";
+            }
+          }
+        }
+        
+        console.log("文件准备完成，开始生成下载...");
+        
+        // 生成下载文件
+        workbook.xlsx.writeBuffer().then(finalBuffer => {
+          // 创建Blob对象
+          const blob = new Blob([finalBuffer], { 
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
+          });
+          
+          // 使用FileSaver.js下载文件
+          FileSaver.saveAs(blob, resultFileData.value.fileName);
+          
+          ElMessage({
+            message: '文件下载成功！',
+            type: 'success'
+          });
+        }).catch(error => {
+          console.error("生成最终Buffer时出错:", error);
+          ElMessage({
+            message: `生成文件时出错: ${error.message}`,
+            type: 'error'
+          });
+        });
+      }).catch(error => {
+        console.error("从Buffer加载工作簿时出错:", error);
+        ElMessage({
+          message: `处理Excel文件时出错: ${error.message}`,
+          type: 'error'
+        });
+      });
+    }).catch(error => {
+      console.error("生成中间Buffer时出错:", error);
+      ElMessage({
+        message: `生成中间文件时出错: ${error.message}`,
+        type: 'error'
+      });
     });
   } catch (error) {
+    console.error("下载文件过程中出错:", error);
     ElMessage({
       message: `下载文件时出错: ${error.message}`,
       type: 'error'
     });
+  }
+};
+
+// 清理Excel中的空值，确保U-Z列的0值设置为空
+const cleanEmptyCells = (workbook) => {
+  try {
+    const worksheet = workbook.worksheets[0];
+    
+    // 从第2行开始（跳过表头）
+    for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
+      const row = worksheet.getRow(rowNumber);
+      
+      // 检查是否是有效的ASIN行
+      const asinCell = row.getCell(2); // ASIN列
+      if (!asinCell || !asinCell.value) continue;
+      
+      const asin = String(asinCell.value).trim();
+      if (!asin.match(/^B[\dA-Z]{9,}/i)) continue;
+      
+      // 检查原始模板中相应单元格是否为空
+      // 通过一个简单的方法来判断：检查单元格的具体属性
+      for (let colIndex = 21; colIndex <= 26; colIndex++) {
+        const cell = row.getCell(colIndex);
+        
+        // 检查单元格的实际值，而不是指定值为null的行为
+        let hasValue = false;
+        
+        // 如果单元格之前是由公式计算的，ExcelJS会保留一些特殊属性
+        // cell.formula 或 cell.result 会有值，这表示它是通过公式计算的
+        // 否则，就是直接设置的值
+        
+        if (cell.formula || (cell.value !== null && cell.value !== undefined && cell.value !== '')) {
+          // 单元格有值
+          hasValue = true;
+        }
+        
+        // 检查单元格的值类型和内容
+        if (!hasValue) {
+          // 如果单元格原本就是空的，将其明确设置为undefined或null
+          // 这确保了Excel导出时不会填充该单元格
+          cell.value = undefined;
+          console.log(`清理了 ASIN ${asin} 的第${colIndex}列空值`);
+        } else if (cell.value === 0 || cell.value === '0' || (typeof cell.value === 'number' && Math.abs(cell.value) < 0.001)) {
+          // 如果单元格值为0或几乎为0，确认它是否应该显示
+          // 在这种情况下，我们想保留它作为显式的0
+          if (cell.value !== "0") {
+            cell.value = "0"; // 使用字符串0确保显示
+            console.log(`将 ASIN ${asin} 的第${colIndex}列的0值转换为字符串"0"`);
+          }
+        }
+      }
+    }
+    
+    console.log('已完成空值清理');
+  } catch (error) {
+    console.error('清理空值时出错:', error);
   }
 };
 
@@ -1895,6 +1839,191 @@ const getReplenishmentPreviewData = () => {
     console.error('获取补货模版预览数据时出错:', error);
     return [];
   }
+};
+
+// 添加一个函数来获取详细的产品库存表数据（包含发货和补货数量）
+const getInventoryTableData = () => {
+  if (!resultFileData.value || !resultFileData.value.workbook) {
+    return [];
+  }
+  
+  try {
+    const worksheet = resultFileData.value.workbook.worksheets[0];
+    const dataRows = [];
+    
+    // 从第2行开始读取数据（跳过表头）
+    for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
+      const row = worksheet.getRow(rowNumber);
+      
+      // 检查是否是有效的ASIN行
+      const asinCell = row.getCell(2); // ASIN列
+      if (!asinCell || !asinCell.value) continue;
+      
+      const asin = String(asinCell.value).trim();
+      if (!asin.match(/^B[\dA-Z]{9,}/i)) continue;
+      
+      // 读取产品数据
+      const productName = row.getCell(1).value;
+      const factoryInventory = Number(row.getCell(4).value || 0);
+      const fbaInventory = Number(row.getCell(3).value || 0);
+      const totalInventory = Number(row.getCell(5).value || 0);
+      const sevenDayAvg = Number(row.getCell(6).value || 0);
+      const thirtyDayAvg = Number(row.getCell(7).value || 0);
+      const finalDailyAvg = Number(row.getCell(9).value || 0);
+      const fbaRotation = Number(row.getCell(10).value || 0);
+      const totalRotation = Number(row.getCell(11).value || 0);
+      
+      // 读取补货和发货数量 - 使用Number转换确保是数字
+      // 如果单元格是空的或非数字，则使用0作为默认值
+      const replenishment90Day = Number(row.getCell(21).value || 0);
+      const replenishment120Day = Number(row.getCell(22).value || 0);
+      const replenishment135Day = Number(row.getCell(23).value || 0);
+      
+      const shipping70Day = Number(row.getCell(24).value || 0);
+      const shipping100Day = Number(row.getCell(25).value || 0);
+      const shipping115Day = Number(row.getCell(26).value || 0);
+      
+      // 获取最大的补货和发货数量
+      const maxReplenishment = Math.max(replenishment90Day, replenishment120Day, replenishment135Day) || 0;
+      const maxShipping = Math.max(shipping70Day, shipping100Day, shipping115Day) || 0;
+      
+      dataRows.push({
+        rowNumber, // 保存行号，用于更新数据
+        productName,
+        asin,
+        factoryInventory,
+        fbaInventory,
+        totalInventory,
+        sevenDayAvg,
+        thirtyDayAvg,
+        finalDailyAvg,
+        fbaRotation,
+        totalRotation,
+        maxReplenishment,
+        maxShipping
+      });
+    }
+    
+    return dataRows;
+  } catch (error) {
+    console.error('获取产品库存表数据时出错:', error);
+    return [];
+  }
+};
+
+// 更新最终计算每天平均值，并重新计算周转等数据
+const updateFinalDailyAverage = (item) => {
+  if (!resultFileData.value || !resultFileData.value.workbook) {
+    ElMessage.error('无法更新数据，结果文件不存在');
+    return;
+  }
+  
+  try {
+    const worksheet = resultFileData.value.workbook.worksheets[0];
+    const row = worksheet.getRow(item.rowNumber);
+    
+    // 解析输入的值，确保是数字并保留两位小数
+    const parsedValue = parseFloat(parseFloat(item.finalDailyAvg).toFixed(2));
+    item.finalDailyAvg = isNaN(parsedValue) ? 0 : parsedValue;
+    
+    // 更新I列 - 最终计算每天平均
+    const finalAvgCell = row.getCell(9);
+    finalAvgCell.value = item.finalDailyAvg;
+    
+    // 重新计算FBA周转 = FBA库存/最终每天平均
+    const fbaRotation = item.finalDailyAvg > 0 ? item.fbaInventory / item.finalDailyAvg : 0;
+    const fbaRotationCell = row.getCell(10);
+    fbaRotationCell.value = fbaRotation;
+    item.fbaRotation = fbaRotation;
+    
+    // 重新计算总周转 = 总库存/最终每天平均
+    const totalRotation = item.finalDailyAvg > 0 ? item.totalInventory / item.finalDailyAvg : 0;
+    const totalRotationCell = row.getCell(11);
+    totalRotationCell.value = totalRotation;
+    item.totalRotation = totalRotation;
+    
+    // 获取基本数据
+    const fbaInventory = item.fbaInventory;
+    const factoryInventory = item.factoryInventory;
+    const tValue = Number(row.getCell(20).value || 36); // T列(装箱数量)
+    
+    // 重新计算U列 - 90天补货
+    // 公式: =CEILING(MAX(0,90-MAX(K{row},60))*I{row}/T{row},1)*T{row}
+    const uValue = Math.ceil(Math.max(0, 90 - Math.max(totalRotation, 60)) * item.finalDailyAvg / tValue) * tValue;
+    // 只有当单元格原本有值时才更新
+    if (row.getCell(21).value !== null) {
+      row.getCell(21).value = uValue === 0 ? "0" : uValue;
+    }
+    
+    // 重新计算V列 - 120天补货(主推款)
+    // 公式: =CEILING(MAX(0,120-MAX(K{row},60))*I{row}/T{row},1)*T{row}
+    const vValue = Math.ceil(Math.max(0, 120 - Math.max(totalRotation, 60)) * item.finalDailyAvg / tValue) * tValue;
+    if (row.getCell(22).value !== null) {
+      row.getCell(22).value = vValue === 0 ? "0" : vValue;
+    }
+    
+    // 重新计算W列 - 135天补货(特推款)
+    // 公式: =CEILING(MAX(0,135-MAX(K{row},60))*I{row}/T{row},1)*T{row}
+    const wValue = Math.ceil(Math.max(0, 135 - Math.max(totalRotation, 60)) * item.finalDailyAvg / tValue) * tValue;
+    if (row.getCell(23).value !== null) {
+      row.getCell(23).value = wValue === 0 ? "0" : wValue;
+    }
+    
+    // 重新计算X列 - 70天发货
+    // 公式: =MIN(CEILING(MAX(0,70-MAX(J{row},30))*I{row}/T{row},1)*T{row},D{row})
+    const xBaseValue = Math.ceil(Math.max(0, 70 - Math.max(fbaRotation, 30)) * item.finalDailyAvg / tValue) * tValue;
+    const xValue = Math.min(xBaseValue, factoryInventory);
+    if (row.getCell(24).value !== null) {
+      row.getCell(24).value = xValue === 0 ? "0" : xValue;
+    }
+    
+    // 重新计算Y列 - 100天发货(主推款)
+    // 公式: =MIN(CEILING(MAX(0,100-MAX(J{row},30))*I{row}/T{row},1)*T{row},D{row})
+    const yBaseValue = Math.ceil(Math.max(0, 100 - Math.max(fbaRotation, 30)) * item.finalDailyAvg / tValue) * tValue;
+    const yValue = Math.min(yBaseValue, factoryInventory);
+    if (row.getCell(25).value !== null) {
+      row.getCell(25).value = yValue === 0 ? "0" : yValue;
+    }
+    
+    // 重新计算Z列 - 115天发货(特推款)
+    // 公式: =MIN(CEILING(MAX(0,115-MAX(J{row},30))*I{row}/T{row},1)*T{row},D{row})
+    const zBaseValue = Math.ceil(Math.max(0, 115 - Math.max(fbaRotation, 30)) * item.finalDailyAvg / tValue) * tValue;
+    const zValue = Math.min(zBaseValue, factoryInventory);
+    if (row.getCell(26).value !== null) {
+      row.getCell(26).value = zValue === 0 ? "0" : zValue;
+    }
+    
+    // 更新结果文件的buffer
+    resultFileData.value.workbook.xlsx.writeBuffer().then(buffer => {
+      resultFileData.value.buffer = buffer;
+    });
+    
+    ElMessage.success('数据更新成功，已重新计算发补货数量');
+  } catch (error) {
+    console.error('更新数据时出错:', error);
+    ElMessage.error(`更新数据时出错: ${error.message}`);
+  }
+};
+
+// 进入发补货计划生成结果页面
+const goToFinalResults = () => {
+  // 重新生成所有模板
+  Promise.all([
+    generateReplenishmentTemplate(),
+    generateShippingTemplate(),
+    generateBackendShippingTemplate()
+  ]).then(() => {
+    uploadStep.value = 3; // 进入最终结果页面
+    ElMessage.success('模板生成成功，进入结果页面');
+  }).catch(error => {
+    ElMessage.error(`生成模板时出错: ${error.message}`);
+  });
+};
+
+// 添加一个格式化数字的辅助函数
+const formatNumber = (num) => {
+  if (num === null || num === undefined) return 0;
+  return parseFloat(num).toFixed(2);
 };
 </script>
 
@@ -2094,6 +2223,78 @@ const getReplenishmentPreviewData = () => {
       </div>
       
       <div v-else-if="uploadStep === 2" class="results-section">
+        <div class="results-header">
+          <h2>产品库存及周转统计</h2>
+          <p>已完成数据处理，您可以在这里查看和编辑"最终计算每天平均"数据</p>
+        </div>
+        
+        <div class="inventory-table-section">
+          <div class="table-instruction">
+            <el-alert
+              title="编辑说明"
+              type="info"
+              description="修改'最终计算每天平均'列的数值后，点击输入框外部或按回车键确认，系统将自动重新计算FBA周转、总周转以及发货和补货数量。"
+              show-icon
+              :closable="false"
+              style="margin-bottom: 15px;"
+            />
+          </div>
+          
+          <el-table :data="getInventoryTableData()" style="width: 100%" height="450">
+            <el-table-column prop="productName" label="产品名称" min-width="180" show-overflow-tooltip fixed="left"></el-table-column>
+            <el-table-column prop="asin" label="ASIN" width="120"></el-table-column>
+            <el-table-column prop="factoryInventory" label="工厂库存" width="100"></el-table-column>
+            <el-table-column prop="fbaInventory" label="FBA库存" width="100"></el-table-column>
+            <el-table-column prop="totalInventory" label="总库存" width="100"></el-table-column>
+            <el-table-column prop="sevenDayAvg" label="7天平均" width="100"></el-table-column>
+            <el-table-column prop="thirtyDayAvg" label="30天平均" width="100"></el-table-column>
+            <el-table-column label="最终计算每天平均" width="180">
+              <template #default="scope">
+                <el-input 
+                  v-model.number="scope.row.finalDailyAvg" 
+                  @change="updateFinalDailyAverage(scope.row)"
+                  type="number" 
+                  step="0.01"
+                  size="small"
+                  class="final-avg-input"
+                ></el-input>
+              </template>
+            </el-table-column>
+            <el-table-column label="FBA周转" width="100">
+              <template #default="scope">
+                {{ formatNumber(scope.row.fbaRotation) }}
+              </template>
+            </el-table-column>
+            <el-table-column label="总周转" width="100">
+              <template #default="scope">
+                {{ formatNumber(scope.row.totalRotation) }}
+              </template>
+            </el-table-column>
+            <el-table-column label="补货数量" width="100">
+              <template #default="scope">
+                {{ scope.row.maxReplenishment }}
+              </template>
+            </el-table-column>
+            <el-table-column label="发货数量" width="100">
+              <template #default="scope">
+                {{ scope.row.maxShipping }}
+              </template>
+            </el-table-column>
+          </el-table>
+          
+          <div class="action-buttons" style="margin-top: 20px; text-align: center;">
+            <el-button type="primary" size="large" @click="downloadResultFile">
+              <el-icon><Download /></el-icon>
+              下载产品库存及周转统计
+            </el-button>
+            <el-button type="success" size="large" @click="goToFinalResults">
+              下一步：查看发补货计划
+            </el-button>
+          </div>
+        </div>
+      </div>
+      
+      <div v-else-if="uploadStep === 3" class="results-section">
         <div class="results-header">
           <h2>发补货计划生成结果</h2>
           <p>已完成文件处理，以下是重点数据预览</p>
@@ -2805,4 +3006,91 @@ body {
   text-overflow: ellipsis;
   max-width: 300px;
 }
+
+/* 结果页面样式 */
+.results-section {
+  padding: 2rem;
+  min-height: calc(100vh - 160px);
+}
+
+.results-header {
+  margin-bottom: 2rem;
+  text-align: center;
+}
+
+.results-header h2 {
+  font-size: 1.8rem;
+  color: var(--apple-dark);
+  margin-bottom: 0.5rem;
+}
+
+.results-header p {
+  color: var(--apple-gray);
+  font-size: 1rem;
+}
+
+.results-placeholder {
+  background-color: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+  padding: 2rem;
+  margin-bottom: 2rem;
+}
+
+/* 产品库存表格页面样式 */
+.inventory-table-section {
+  background-color: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+  padding: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.inventory-table-section .el-table {
+  --el-table-header-bg-color: #f5f7fa;
+  --el-table-border-color: #ebeef5;
+}
+
+.inventory-table-section .el-table th {
+  font-weight: 600;
+  color: #606266;
+}
+
+.inventory-table-section .el-input {
+  width: 100%;
+}
+
+.inventory-table-section .el-input__inner {
+  text-align: center;
+  font-weight: 500;
+  color: #409EFF;
+}
+
+.action-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+/* 修改现有样式 */
+.inventory-table-section .final-avg-input .el-input__inner {
+  text-align: center;
+  font-weight: 500;
+  color: #409EFF;
+}
+
+.inventory-table-section .el-table td {
+  padding: 8px 0;
+}
+
+.inventory-table-section .el-table .cell {
+  text-align: center;
+}
+
+/* 移除之前的首列左对齐设置 */
+/* .inventory-table-section .el-table .el-table__cell:first-child .cell {
+  text-align: left;
+  padding-left: 12px;
+} */
 </style>
