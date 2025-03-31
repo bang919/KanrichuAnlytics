@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import * as XLSX from 'xlsx';
 import * as ExcelJS from 'exceljs';
@@ -2207,6 +2207,117 @@ const makeItFiveBoxes = (row, index) => {
     ElMessage.error(`调整箱数时出错: ${error.message}`);
   }
 };
+
+// 计算货值统计数据
+const calculateValues = () => {
+  // 亚马逊货值 - 从FBA库存文件中获取
+  let amazonInventoryValue = 0;
+  if (processedData.value.resultFileData && processedData.value.resultFileData.fbaInventorySheet) {
+    const sheet = processedData.value.resultFileData.fbaInventorySheet;
+    
+    // 查找"货值"列的索引（通常是N列）
+    let valueColumnIndex = -1;
+    if (sheet[0]) {
+      sheet[0].forEach((cell, index) => {
+        if (cell && cell.toString().includes('货值')) {
+          valueColumnIndex = index;
+        }
+      });
+    }
+    
+    // 如果找到货值列，计算总和
+    if (valueColumnIndex !== -1) {
+      // 从第2行开始求和（跳过表头）
+      for (let i = 1; i < sheet.length; i++) {
+        if (sheet[i] && sheet[i][valueColumnIndex]) {
+          const value = parseFloat(sheet[i][valueColumnIndex]);
+          if (!isNaN(value)) {
+            amazonInventoryValue += value;
+          }
+        }
+      }
+    }
+  }
+  
+  // 工厂货值 - 从喜悦库存文件中的A7单元格获取
+  let factoryInventoryValue = 0;
+  if (processedData.value.resultFileData && processedData.value.resultFileData.worksheetData) {
+    const sheet = processedData.value.resultFileData.worksheetData;
+    if (sheet[6] && sheet[6][0]) { // A7 (索引从0开始，所以是6,0)
+      const value = parseFloat(sheet[6][0]);
+      if (!isNaN(value)) {
+        factoryInventoryValue = value;
+      }
+    }
+  }
+  
+  // 更新计算结果
+  inventoryStats.value.amazonInventoryValue = amazonInventoryValue;
+  inventoryStats.value.factoryInventoryValue = factoryInventoryValue;
+  
+  // 更新统计信息文字
+  updateStatsText();
+};
+
+// 更新统计信息文字
+const updateStatsText = () => {
+  const now = new Date();
+  const month = now.getMonth() + 1;
+  const day = now.getDate();
+  
+  // 计算亚马逊货值（人民币）
+  const amazonValueRMB = inventoryStats.value.amazonInventoryValue * inventoryStats.value.exchangeRate;
+  // 计算工厂实际货值（减去未付款）
+  const factoryActualValue = inventoryStats.value.factoryInventoryValue - inventoryStats.value.factoryUnpaid;
+  // 计算亚马逊预收款（人民币）
+  const amazonAdvanceRMB = inventoryStats.value.amazonAdvance * inventoryStats.value.exchangeRate;
+  // 计算银信致汇预收款（人民币）
+  const yinxinAdvanceRMB = inventoryStats.value.yinxinAdvance * inventoryStats.value.exchangeRate;
+  
+  // 格式化为"xx万"形式的函数
+  const formatToWan = (value) => {
+    const wan = value / 10000;
+    return wan.toFixed(2) + '万';
+  };
+  
+  inventoryStats.value.statsText = `${month}月${day}日统计数据：亚马逊货值${formatToWan(amazonValueRMB)}，工厂货值${formatToWan(factoryActualValue)}，亚马逊预收款${amazonAdvanceRMB.toFixed(2)}元，银信致汇预收款${yinxinAdvanceRMB.toFixed(2)}元`;
+};
+
+// 创建响应式的统计数据
+const inventoryStats = ref({
+  amazonInventoryValue: 0, // 美元
+  factoryInventoryValue: 0, // 人民币
+  exchangeRate: 7.2, // 美元汇率
+  factoryUnpaid: 0, // 工厂未付款（人民币）
+  amazonAdvance: 0, // 亚马逊预收款（美元）
+  yinxinAdvance: 0, // 银信致汇预收款（美元）
+  statsText: '' // 统计信息文字
+});
+
+// 监听用户输入变化，更新统计信息
+watch(
+  () => [
+    inventoryStats.value.exchangeRate,
+    inventoryStats.value.factoryUnpaid,
+    inventoryStats.value.amazonAdvance,
+    inventoryStats.value.yinxinAdvance
+  ],
+  () => {
+    updateStatsText();
+  },
+  { deep: true }
+);
+
+// 当数据处理完毕后，计算货值
+watch(
+  () => processedData.value.resultFileData,
+  (newValue) => {
+    if (newValue) {
+      calculateValues();
+    }
+  },
+  { deep: true }
+);
 </script>
 
 <template>
@@ -2568,7 +2679,41 @@ const makeItFiveBoxes = (row, index) => {
             </div>
             
             <div class="action-group">
-            <el-button @click="uploadStep = 1" size="large">返回上传页</el-button>
+              <div class="buttons">
+                <el-button @click="downloadResultFile" type="primary" size="large">
+                  下载结果处理文件
+                </el-button>
+                
+                <!-- 新增货值统计模块 -->
+                <div class="value-statistics-section">
+                  <h3 class="section-title">货值统计</h3>
+                  <div class="statistics-form">
+                    <div class="form-fields">
+                      <div class="form-group">
+                        <label>美元汇率</label>
+                        <el-input v-model="inventoryStats.exchangeRate" type="number" placeholder="美元汇率" />
+                      </div>
+                      <div class="form-group">
+                        <label>工厂未付款(¥)</label>
+                        <el-input v-model="inventoryStats.factoryUnpaid" type="number" placeholder="工厂未付款(¥)" />
+                      </div>
+                      <div class="form-group">
+                        <label>亚马逊预收款($)</label>
+                        <el-input v-model="inventoryStats.amazonAdvance" type="number" placeholder="亚马逊预收款($)" />
+                      </div>
+                      <div class="form-group">
+                        <label>银信致汇预收款($)</label>
+                        <el-input v-model="inventoryStats.yinxinAdvance" type="number" placeholder="银信致汇预收款($)" />
+                      </div>
+                    </div>
+                    <div class="statistics-result">
+                      <p class="result-text">{{ inventoryStats.statsText }}</p>
+                    </div>
+                  </div>
+                </div>
+                
+                <el-button @click="uploadStep = 1" size="large">返回上传页</el-button>
+              </div>
             </div>
           </div>
         </div>
@@ -3286,5 +3431,58 @@ body {
 .action-buttons {
   display: flex;
   gap: 5px;
+}
+
+/* 货值统计样式 */
+.value-statistics-section {
+  background-color: #fff;
+  border-radius: 8px;
+  padding: 20px;
+  margin-top: 20px;
+  box-shadow: 0 2px 12px 0 rgba(0,0,0,0.1);
+}
+
+.statistics-form {
+  margin-top: 15px;
+}
+
+.form-fields {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 15px;
+  margin-bottom: 20px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.form-group label {
+  margin-bottom: 5px;
+  font-size: 14px;
+  color: #606266;
+}
+
+.statistics-result {
+  background-color: #f0f8ff;
+  padding: 15px;
+  border-radius: 4px;
+  border-left: 4px solid #409eff;
+}
+
+.result-text {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: #303133;
+  font-weight: 500;
+}
+
+/* 调整返回按钮位置 */
+.back-button-container {
+  margin-top: 20px;
+  display: flex;
+  justify-content: center;
 }
 </style>
