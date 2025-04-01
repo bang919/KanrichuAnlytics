@@ -941,6 +941,18 @@ const generateResultFile = async () => {
         const totalRotation = finalAvg > 0 ? totalInventory / finalAvg : 0;
         totalRotationCell.value = totalRotation;
 
+
+        // 计算Q列（FBA库存总成本）= M列*C列
+        const fbaCostCell = row.getCell(17);  // Q列
+        const fbaCost = fbaCell.value * row.getCell(13).value;
+        fbaCostCell.value = fbaCost;
+
+        // 计算R列（工厂库存总成本）= N列*C列
+        const factoryCostCell = row.getCell(18);  // R列
+        const factoryCost = inventoryCell.value * row.getCell(13).value;
+        factoryCostCell.value = factoryCost;
+        
+
         // 获取T列(装箱数量)的值
         const tValue = Number(row.getCell(20).value || 36);
 
@@ -2174,137 +2186,49 @@ const makeItFiveBoxes = (row, index) => {
 
 // 计算货值统计数据
 const calculateValues = () => {
-  console.log('calculateValues 开始执行');
+  console.log('开始执行calculateValues函数');
   
-  // 亚马逊货值 - 直接从FBA库存文件获取
-  let amazonInventoryValue = 0;
-  
-  // 查找并读取FBA库存文件（文件名以"FBAInventory"开头的Excel文件）
-  const fbaFile = fileList.value.find(f => f.type === 'fba');
-  
-  if (fbaFile && fbaFile.file) {
-    console.log(`找到FBA库存文件: ${fbaFile.file.name}`);
-    
-    const reader = new FileReader();
-    
-    reader.onload = function(e) {
-      try {
-        const data = new Uint8Array(e.target.result);
-        const workbook = XLSX.read(data, { type: 'array' });
-        
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
-        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-        
-        // 查找表头行和货值列的索引
-        let headerRowIndex = -1;
-        let valueColumnIndex = -1;
-        
-        // 假设货值列名可能是"货值"、"总货值"、"value"等
-        for (let i = 0; i < Math.min(10, jsonData.length); i++) {
-          if (jsonData[i] && Array.isArray(jsonData[i])) {
-            for (let j = 0; j < jsonData[i].length; j++) {
-              const cellValue = String(jsonData[i][j] || '');
-              if (cellValue.includes('货值')) {
-                headerRowIndex = i;
-                valueColumnIndex = j;
-                console.log(`找到货值列，表头行: ${i+1}，列索引: ${j+1}`);
-                break;
-              }
-            }
-            if (headerRowIndex >= 0) break;
-          }
-        }
-        
-        // 如果找到了货值列，计算总和
-        if (headerRowIndex >= 0 && valueColumnIndex >= 0) {
-          // 从表头行的下一行开始计算货值总和
-          for (let i = headerRowIndex + 1; i < jsonData.length; i++) {
-            if (jsonData[i] && jsonData[i][valueColumnIndex]) {
-              const value = parseFloat(jsonData[i][valueColumnIndex]);
-              if (!isNaN(value)) {
-                amazonInventoryValue += value;
-              }
-            }
-          }
-          
-          // 更新亚马逊货值
-          inventoryStats.value.amazonInventoryValue = amazonInventoryValue;
-          console.log(`亚马逊货值总和: ${amazonInventoryValue}`);
-          
-          // 更新统计信息
-          updateStatsText();
-        } else {
-          console.log('未能在FBA库存文件中找到货值列');
-          inventoryStats.value.amazonInventoryValue = 0;
-        }
-      } catch (error) {
-        console.error('读取FBA库存文件时出错:', error);
-      }
-    };
-    
-    reader.readAsArrayBuffer(fbaFile.file);
-  } else {
-    console.log('未找到FBA库存文件');
-    inventoryStats.value.amazonInventoryValue = 0;
+  if (!resultFileData.value || !resultFileData.value.workbook) {
+    console.log('没有准备好的统计表数据，无法计算货值');
+    return;
   }
   
-  // 工厂货值 - 直接从喜悦库存文件的A7单元格获取
-  let factoryInventoryValue = 0;
-  const xiyueFile = fileList.value.find(f => f.type === 'xiyue');
+  console.log('找到统计表数据，开始计算货值');
   
-  if (xiyueFile && xiyueFile.file) {
-    console.log('找到喜悦库存文件，开始读取A7单元格');
-    // 读取文件内容并直接获取A7单元格的值
-    const reader = new FileReader();
+  try {
+    // 从"统计表-下载产品库存及周转统计"中获取数据
+    const workbook = resultFileData.value.workbook;
+    const worksheet = workbook.worksheets[0];
     
-    reader.onload = function(e) {
-      try {
-        const data = new Uint8Array(e.target.result);
-        let workbook;
+    // 用于存储总和的变量
+    let totalFbaCost = 0;
+    let totalFactoryCost = 0;
+    
+    // 遍历表格，计算Q列(FBA库存总成本)和R列(工厂总成本)的总和
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber > 1) { // 跳过表头
+        const fbaCost = Number(row.getCell(17).value || 0); // Q列(17)
+        const factoryCost = Number(row.getCell(18).value || 0); // R列(18)
         
-        // 尝试读取为CSV
-        if (xiyueFile.file.name.toLowerCase().endsWith('.csv')) {
-          const csvContent = new TextDecoder('utf-8').decode(data);
-          workbook = XLSX.read(csvContent, { type: 'string' });
-        } else {
-          // 否则读取为Excel
-          workbook = XLSX.read(data, { type: 'array' });
-        }
-        
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
-        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-        
-        // 直接获取A7单元格的值（索引从0开始，所以是行6，列0）
-        if (jsonData && jsonData.length > 6 && jsonData[6] && jsonData[6].length > 0) {
-          const value = parseFloat(jsonData[6][0]);
-          if (!isNaN(value)) {
-            console.log(`成功获取喜悦库存A7单元格值: ${value}`);
-            // 更新工厂货值
-            inventoryStats.value.factoryInventoryValue = value;
-            // 更新统计信息文字
-            updateStatsText();
-          } else {
-            console.log('A7单元格值转换为数字失败');
-          }
-        } else {
-          console.log('喜悦库存文件数据结构不符合预期，无法获取A7单元格');
-        }
-      } catch (error) {
-        console.error('读取喜悦库存文件A7单元格时出错:', error);
+        totalFbaCost += fbaCost;
+        totalFactoryCost += factoryCost;
       }
-    };
+    });
     
-    reader.readAsArrayBuffer(xiyueFile.file);
-  } else {
-    console.log('未找到喜悦库存文件');
-    // 没有找到喜悦库存文件，设置为0
-    inventoryStats.value.factoryInventoryValue = 0;
+    console.log(`FBA库存总成本(Q列)总和: ${totalFbaCost}`);
+    console.log(`工厂总成本(R列)总和: ${totalFactoryCost}`);
+    
+    // 更新货值统计
+    inventoryStats.value.amazonInventoryValue = totalFbaCost;
+    inventoryStats.value.factoryInventoryValue = totalFactoryCost;
+    
+    // 更新统计信息文字
+    updateStatsText();
+    
+  } catch (error) {
+    console.error('计算货值时出错:', error);
   }
   
-  // 立即更新统计信息文字（稍后会根据异步读取的数据再次更新）
-  updateStatsText();
   console.log('calculateValues 执行完毕');
 };
 
@@ -2359,7 +2283,7 @@ watch(
 
 // 当数据处理完毕后，计算货值
 watch(
-  () => processedData.value.resultFileData,
+  () => resultFileData.value,
   (newValue) => {
     if (newValue) {
       calculateValues();
