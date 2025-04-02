@@ -607,35 +607,50 @@ const processSevenDayAnalysis = async (file) => {
           const worksheet = workbook.Sheets[firstSheetName];
           const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
           
-          // 根据用户反馈，ASIN在第2列，平均销量在第8列(H列)
-          // 注意：数组索引从0开始，所以第2列对应索引1，第8列对应索引7
+          // ASIN列通常在第2列
           const asinColIndex = 1; // 第2列ASIN
-          const avgSalesColIndex = 7; // 第8列(H列)平均销量
           
-          console.log(`使用固定列索引: ASIN列=${asinColIndex+1}, 平均销量列=${avgSalesColIndex+1}`);
-          
-          // 创建ASIN到7天平均销量的映射
-          const sevenDaySalesMap = {};
-          let foundCount = 0;
-          
-          // 找到表头行跳过
+          // 找到表头行并动态查找平均销量列
           let headerRowIndex = -1;
-          for (let i = 0; i < Math.min(5, jsonData.length); i++) {
+          let avgSalesColIndex = -1;
+          
+          for (let i = 0; i < Math.min(10, jsonData.length); i++) {
             if (jsonData[i] && jsonData[i].length > asinColIndex) {
-              const cellValue = String(jsonData[i][asinColIndex] || '');
-              if (cellValue.includes("ASIN")) {
+              const asinCellValue = String(jsonData[i][asinColIndex] || '');
+              if (asinCellValue.includes("ASIN")) {
                 headerRowIndex = i;
+                // 找到表头行后，查找平均销量列
+                for (let j = 0; j < jsonData[i].length; j++) {
+                  const headerValue = String(jsonData[i][j] || '');
+                  if (headerValue.includes("平均销量") || headerValue.includes("Average Sales")) {
+                    avgSalesColIndex = j;
+                    console.log(`找到平均销量列，索引: ${j+1}列`);
+                    break;
+                  }
+                }
                 console.log(`找到7天分析表头行: ${i+1}行`);
                 break;
               }
             }
           }
           
+          // 如果未找到平均销量列，使用默认的第8列(H列)
+          if (avgSalesColIndex < 0) {
+            avgSalesColIndex = 7; // 默认使用第8列
+            console.log(`未找到平均销量列，使用默认第8列(H列)`);
+          }
+          
+          console.log(`使用列索引: ASIN列=${asinColIndex+1}, 平均销量列=${avgSalesColIndex+1}`);
+          
           // 如果找不到表头行，假设第一行是表头
           if (headerRowIndex < 0) {
             headerRowIndex = 0;
             console.log("未找到明确的表头行，假设第一行是表头");
           }
+          
+          // 创建ASIN到7天平均销量的映射
+          const sevenDaySalesMap = {};
+          let foundCount = 0;
           
           // 从表头行的下一行开始处理
           for (let i = headerRowIndex + 1; i < jsonData.length; i++) {
@@ -702,35 +717,51 @@ const processThirtyDayAnalysis = async (file) => {
           const firstSheetName = workbook.SheetNames[0];
           const worksheet = workbook.Sheets[firstSheetName];
           const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-          // 根据用户反馈，ASIN在第2列，平均销量在第8列(H列)
-          // 注意：数组索引从0开始，所以第2列对应索引1，第8列对应索引7
+          
+          // ASIN列通常在第2列
           const asinColIndex = 1; // 第2列ASIN
-          const avgSalesColIndex = 7; // 第8列(H列)平均销量
           
-          console.log(`使用固定列索引: ASIN列=${asinColIndex+1}, 平均销量列=${avgSalesColIndex+1}`);
-          
-          // 创建ASIN到30天平均销量的映射
-          const thirtyDaySalesMap = {};
-          let foundCount = 0;
-          
-          // 找到表头行跳过
+          // 找到表头行并动态查找平均销量列
           let headerRowIndex = -1;
-          for (let i = 0; i < Math.min(5, jsonData.length); i++) {
+          let avgSalesColIndex = -1;
+          
+          for (let i = 0; i < Math.min(10, jsonData.length); i++) {
             if (jsonData[i] && jsonData[i].length > asinColIndex) {
-              const cellValue = String(jsonData[i][asinColIndex] || '');
-              if (cellValue.includes("ASIN")) {
+              const asinCellValue = String(jsonData[i][asinColIndex] || '');
+              if (asinCellValue.includes("ASIN")) {
                 headerRowIndex = i;
+                // 找到表头行后，查找平均销量列
+                for (let j = 0; j < jsonData[i].length; j++) {
+                  const headerValue = String(jsonData[i][j] || '');
+                  if (headerValue.includes("平均销量") || headerValue.includes("Average Sales")) {
+                    avgSalesColIndex = j;
+                    console.log(`找到平均销量列，索引: ${j+1}列`);
+                    break;
+                  }
+                }
                 console.log(`找到30天分析表头行: ${i+1}行`);
                 break;
               }
             }
           }
           
+          // 如果未找到平均销量列，使用默认的第8列(H列)
+          if (avgSalesColIndex < 0) {
+            avgSalesColIndex = 7; // 默认使用第8列
+            console.log(`未找到平均销量列，使用默认第8列(H列)`);
+          }
+          
+          console.log(`使用列索引: ASIN列=${asinColIndex+1}, 平均销量列=${avgSalesColIndex+1}`);
+          
           // 如果找不到表头行，假设第一行是表头
           if (headerRowIndex < 0) {
             headerRowIndex = 0;
             console.log("未找到明确的表头行，假设第一行是表头");
           }
+          
+          // 创建ASIN到30天平均销量的映射
+          const thirtyDaySalesMap = {};
+          let foundCount = 0;
           
           // 从表头行的下一行开始处理
           for (let i = headerRowIndex + 1; i < jsonData.length; i++) {
