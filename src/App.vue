@@ -55,6 +55,9 @@ const processedTemplates = ref({
   backendShippingTemplate: null
 });
 
+// 添加"最终计算每天平均系数"的响应式变量
+const finalDailyAvgCoefficient = ref(1.25);
+
 // 自动判断文件类型函数
 const identifyFileType = (file) => {
   const fileName = file.name.toLowerCase();
@@ -955,11 +958,11 @@ const generateResultFile = async () => {
         totalInventoryCell.value = totalInventory;
         
 
-        // 计算I列（最终计算每天平均）= MAX(F列,G列)*1.375
+        // 计算I列（最终计算每天平均）= MAX(F列,G列)*系数
         const sevenDayAvg = Number(sevenDayCell.value || 0);  // F列(6)
         const thirtyDayAvg = Number(thirtyDayCell.value || 0); // G列(7)
         const finalAvgCell = row.getCell(9);  // I列
-        const finalAvg = parseFloat((Math.max(sevenDayAvg, thirtyDayAvg) * 1.375).toFixed(2));
+        const finalAvg = parseFloat((Math.max(sevenDayAvg, thirtyDayAvg) * finalDailyAvgCoefficient.value).toFixed(2));
         finalAvgCell.value = finalAvg;
 
         // 计算J列（FBA周转）= C列/I列
@@ -2030,6 +2033,114 @@ const goToFinalResults = () => {
   });
 };
 
+// 更新计算系数并重新计算所有行的最终平均值
+const updateAllFinalDailyAverages = () => {
+  if (!resultFileData.value || !resultFileData.value.workbook) {
+    ElMessage.error('无法更新数据，结果文件不存在');
+    return;
+  }
+  
+  try {
+    const worksheet = resultFileData.value.workbook.worksheets[0];
+    let updatedCount = 0;
+    
+    // 直接在worksheet上批量操作，而不是循环调用updateFinalDailyAverage
+    // 这样可以提高性能，避免重复计算和多次更新缓冲区
+    
+    // 从第2行开始处理（跳过表头）
+    for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
+      const row = worksheet.getRow(rowNumber);
+      
+      // 检查是否是有效的ASIN行
+      const asinCell = row.getCell(2); // ASIN列
+      if (!asinCell || !asinCell.value) continue;
+      
+      const asin = String(asinCell.value).trim();
+      if (!asin.match(/^B[\dA-Z]{9,}/i)) continue;
+      
+      // 读取必要的值
+      const sevenDayAvg = Number(row.getCell(6).value || 0);  // F列(6) - 7天平均
+      const thirtyDayAvg = Number(row.getCell(7).value || 0); // G列(7) - 30天平均
+      const tValue = Number(row.getCell(20).value || 36); // T列(装箱数量)
+      
+      // 使用新系数计算最终每天平均值
+      const newFinalDailyAvg = parseFloat((Math.max(sevenDayAvg, thirtyDayAvg) * finalDailyAvgCoefficient.value).toFixed(2));
+      
+      // 获取其他必要的值
+      const fbaInventory = Number(row.getCell(3).value || 0);   // C列 - FBA库存
+      const factoryInventory = Number(row.getCell(4).value || 0); // D列 - 工厂库存
+      const totalInventory = fbaInventory + factoryInventory;
+      
+      // 直接更新单元格值
+      // 更新I列 - 最终计算每天平均
+      row.getCell(9).value = newFinalDailyAvg;
+      
+      // 重新计算周转
+      const fbaRotation = newFinalDailyAvg > 0 ? fbaInventory / newFinalDailyAvg : 0;
+      const totalRotation = newFinalDailyAvg > 0 ? totalInventory / newFinalDailyAvg : 0;
+      
+      // 更新J列和K列 - FBA周转和总周转
+      row.getCell(10).value = fbaRotation;
+      row.getCell(11).value = totalRotation;
+      
+      // 重新计算补货量
+      // U列 - 90天补货
+      if(row.getCell(21).value !== null) {
+        const uValue = Math.ceil(Math.max(0, 90 - Math.max(totalRotation, 60)) * newFinalDailyAvg / tValue) * tValue;
+        row.getCell(21).value = uValue === 0 ? "0" : uValue;
+      }
+      
+      // V列 - 120天补货(主推款)
+      if(row.getCell(22).value !== null) {
+        const vValue = Math.ceil(Math.max(0, 120 - Math.max(totalRotation, 60)) * newFinalDailyAvg / tValue) * tValue;
+        row.getCell(22).value = vValue === 0 ? "0" : vValue;
+      }
+      
+      // W列 - 135天补货(特推款)
+      if(row.getCell(23).value !== null) {
+        const wValue = Math.ceil(Math.max(0, 135 - Math.max(totalRotation, 60)) * newFinalDailyAvg / tValue) * tValue;
+        row.getCell(23).value = wValue === 0 ? "0" : wValue;
+      }
+      
+      // 重新计算发货量
+      // X列 - 70天发货
+      if(row.getCell(24).value !== null) {
+        const xBaseValue = Math.ceil(Math.max(0, 70 - Math.max(fbaRotation, 30)) * newFinalDailyAvg / tValue) * tValue;
+        const xValue = Math.min(xBaseValue, factoryInventory);
+        row.getCell(24).value = xValue === 0 ? "0" : xValue;
+      }
+      
+      // Y列 - 100天发货(主推款)
+      if(row.getCell(25).value !== null) {
+        const yBaseValue = Math.ceil(Math.max(0, 100 - Math.max(fbaRotation, 30)) * newFinalDailyAvg / tValue) * tValue;
+        const yValue = Math.min(yBaseValue, factoryInventory);
+        row.getCell(25).value = yValue === 0 ? "0" : yValue;
+      }
+      
+      // Z列 - 115天发货(特推款)
+      if(row.getCell(26).value !== null) {
+        const zBaseValue = Math.ceil(Math.max(0, 115 - Math.max(fbaRotation, 30)) * newFinalDailyAvg / tValue) * tValue;
+        const zValue = Math.min(zBaseValue, factoryInventory);
+        row.getCell(26).value = zValue === 0 ? "0" : zValue;
+      }
+      
+      updatedCount++;
+    }
+    
+    // 一次性更新buffer，避免重复更新
+    resultFileData.value.workbook.xlsx.writeBuffer().then(buffer => {
+      resultFileData.value.buffer = buffer;
+      console.log('已更新结果文件buffer');
+    });
+    
+    // 显示成功消息
+    ElMessage.success(`已使用系数 ${finalDailyAvgCoefficient.value} 更新${updatedCount}行数据`);
+  } catch (error) {
+    console.error('批量更新数据时出错:', error);
+    ElMessage.error(`批量更新数据时出错: ${error.message}`);
+  }
+};
+
 // 添加一个格式化数字的辅助函数
 const formatNumber = (num) => {
   if (num === null || num === undefined) return 0;
@@ -2569,6 +2680,33 @@ watch(
               :closable="false"
               style="margin-bottom: 15px;"
             />
+            
+            <!-- 添加"最终计算每天平均系数"控件 -->
+            <div class="coefficient-control">
+              <div class="coefficient-wrapper">
+                <div class="coefficient-label">最终计算每天平均系数：</div>
+                <el-input-number 
+                  v-model="finalDailyAvgCoefficient" 
+                  :min="0.1" 
+                  :max="5" 
+                  :step="0.05"
+                  :precision="2"
+                  size="small"
+                  style="width: 120px"
+                />
+                <el-button 
+                  type="primary" 
+                  size="small" 
+                  @click="updateAllFinalDailyAverages"
+                  style="margin-left: 10px"
+                >
+                  应用到全表
+                </el-button>
+              </div>
+              <div class="coefficient-hint">
+                （默认1.25，修改后点击"应用到全表"更新所有数据）
+              </div>
+            </div>
           </div>
           
           <el-table :data="getInventoryTableData()" style="width: 100%" height="450">
@@ -2748,7 +2886,7 @@ watch(
                   </div>
                 </div>
                 
-                <el-button @click="uploadStep = 1" size="large">返回上传页</el-button>
+            <el-button @click="uploadStep = 1" size="large">返回上传页</el-button>
               </div>
             </div>
           </div>
@@ -3564,5 +3702,34 @@ body {
   margin-top: 20px;
   display: flex;
   justify-content: center;
+}
+
+.coefficient-control {
+  display: flex;
+  flex-direction: column;
+  margin-top: 10px;
+  margin-bottom: 20px;
+  padding: 12px 15px;
+  background-color: #f5f7fa;
+  border-radius: 4px;
+  border: 1px solid #e4e7ed;
+}
+
+.coefficient-wrapper {
+  display: flex;
+  align-items: center;
+}
+
+.coefficient-label {
+  margin-right: 10px;
+  font-weight: bold;
+  font-size: 14px;
+}
+
+.coefficient-hint {
+  font-size: 13px;
+  color: #909399;
+  margin-top: 10px;
+  padding-left: 2px;
 }
 </style>
