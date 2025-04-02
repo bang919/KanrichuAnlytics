@@ -1904,6 +1904,9 @@ const getInventoryTableData = () => {
       });
     }
     
+    // 按照30天平均销量从大到小排序
+    dataRows.sort((a, b) => b.thirtyDayAvg - a.thirtyDayAvg);
+    
     return dataRows;
   } catch (error) {
     console.error('获取产品库存表数据时出错:', error);
