@@ -58,6 +58,9 @@ const processedTemplates = ref({
 // 添加"最终计算每天平均系数"的响应式变量
 const finalDailyAvgCoefficient = ref(1.25);
 
+// 添加页面状态变量，用于控制显示哪个页面
+const currentPage = ref('main'); // 'main' 或 'invoice'
+
 // 自动判断文件类型函数
 const identifyFileType = (file) => {
   const fileName = file.name.toLowerCase();
@@ -2467,6 +2470,479 @@ watch(
     }
   }
 );
+
+// 添加生成发票页面相关数据和方法
+const invoiceFileList = ref([]);
+const invoiceReady = ref(false);
+
+// 识别发货文件类型
+const identifyInvoiceFileType = (file) => {
+  const fileName = file.name.toLowerCase();
+  
+  // FBA发货文件判断 - 文件名以"FBA"开头，以.csv结尾
+  if ((fileName.startsWith('fba') || fileName.startsWith('fba_')) && fileName.endsWith('.csv')) {
+    console.log(`识别文件 ${file.name} 为FBA发货文件`);
+    return 'fba_shipment';
+  }
+  
+  // 无法识别
+  console.warn(`无法识别文件类型: ${file.name}，必须以"FBA"开头且为CSV格式`);
+  return 'unknown';
+};
+
+// 处理发票文件上传
+const handleInvoiceFileUpload = (files) => {
+  if (!files || files.length === 0) return;
+  
+  console.log(`准备处理${files.length}个文件`);
+  
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    console.log(`处理文件: ${file.name}, 大小: ${file.size} 字节`);
+    
+    const fileType = identifyInvoiceFileType(file);
+    
+    if (fileType === 'unknown') {
+      ElMessage({
+        message: `无法识别文件类型: ${file.name}，请确保文件名以"FBA"开头且为CSV格式`,
+        type: 'warning'
+      });
+      continue;
+    }
+    
+    // 添加到文件列表，带状态
+    const newFile = {
+      name: file.name,
+      type: fileType,
+      size: (file.size / 1024).toFixed(2) + ' KB',
+      file: file,
+      status: 'uploaded'
+    };
+    
+    // 更新发票文件列表
+    invoiceFileList.value.push(newFile);
+    
+    // 更新准备状态
+    invoiceReady.value = invoiceFileList.value.length > 0;
+    
+    // 显示成功消息
+    ElMessage({
+      message: `成功上传 ${file.name}`,
+      type: 'success'
+    });
+    
+    console.log(`文件 ${file.name} 已成功添加到处理列表`);
+  }
+};
+
+// 处理发票拖放
+function handleInvoiceDrop(e) {
+  const dt = e.dataTransfer;
+  const files = dt.files;
+  handleInvoiceFileUpload(files);
+}
+
+// 通过点击触发发票文件选择
+const triggerInvoiceFileSelect = () => {
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.multiple = true;
+  fileInput.accept = '.csv';
+  fileInput.onchange = (e) => handleInvoiceFileUpload(e.target.files);
+  fileInput.click();
+};
+
+// 重置发票上传状态
+const resetInvoiceUploads = () => {
+  invoiceFileList.value = [];
+  invoiceReady.value = false;
+};
+
+// 切换到发票页面
+const goToInvoicePage = () => {
+  currentPage.value = 'invoice';
+  resetInvoiceUploads();
+};
+
+// 返回主页面
+const goToMainPage = () => {
+  currentPage.value = 'main';
+};
+
+// 生成发票Excel文件
+const generateInvoiceFile = async () => {
+  if (invoiceFileList.value.length === 0) {
+    ElMessage.warning('请先上传FBA发货文件');
+    return;
+  }
+  
+  try {
+    console.log('开始生成贴标文件...');
+    console.log('上传的文件数量:', invoiceFileList.value.length);
+    
+    // 加载产品库存及周转统计文件
+    const response = await fetch('/产品库存及周转统计.xlsx');
+    if (!response.ok) {
+      throw new Error(`获取产品库存文件失败: ${response.status} ${response.statusText}`);
+    }
+    
+    console.log('成功获取产品库存文件');
+    const arrayBuffer = await response.arrayBuffer();
+    console.log('产品库存文件大小:', arrayBuffer.byteLength, '字节');
+    
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(arrayBuffer);
+    const inventorySheet = workbook.worksheets[0];
+    console.log('工作表名称:', inventorySheet.name, '行数:', inventorySheet.rowCount);
+    
+    // 创建SKU对应的商品信息映射
+    const skuMap = {};
+    
+    // 从第2行开始读取产品库存数据
+    let validSkuCount = 0;
+    for (let rowNumber = 2; rowNumber <= inventorySheet.rowCount; rowNumber++) {
+      const row = inventorySheet.getRow(rowNumber);
+      
+      // 获取商品信息
+      const skuCell = row.getCell(30); // AD列 - SKU
+      if (!skuCell || !skuCell.value) continue;
+      
+      const sku = String(skuCell.value).trim();
+      if (!sku) continue;
+      
+      const productName = row.getCell(1).value; // 产品名称
+      const asin = row.getCell(2).value; // ASIN
+      const fnsku = row.getCell(31).value; // FNSKU - AE列
+      const boxQuantity = row.getCell(20).value || 0; // 装箱数量 - T列
+      const boxLength = row.getCell(33).value || 0; // 箱子长 - AF列
+      const boxWidth = row.getCell(34).value || 0; // 箱子宽 - AG列
+      const boxHeight = row.getCell(35).value || 0; // 箱子高 - AH列
+      
+      skuMap[sku] = {
+        name: productName,
+        asin: asin,
+        fnsku: fnsku,
+        boxQuantity: boxQuantity,
+        boxLength: boxLength,
+        boxWidth: boxWidth,
+        boxHeight: boxHeight
+      };
+      validSkuCount++;
+    }
+    
+    console.log(`成功构建SKU映射，共有${validSkuCount}个有效SKU`);
+    console.log('SKU样例:');
+    const skuSamples = Object.keys(skuMap).slice(0, 5);
+    console.log(skuSamples);
+    
+    if (validSkuCount === 0) {
+      console.error('未找到任何有效的SKU，请检查产品库存文件格式是否正确');
+      throw new Error('未找到任何有效的SKU信息');
+    }
+    
+    // 创建贴标Excel文件
+    const resultWorkbook = new ExcelJS.Workbook();
+    const resultSheet = resultWorkbook.addWorksheet('贴标');
+    
+    // 设置列宽
+    resultSheet.columns = [
+      { header: '名称', key: 'name', width: 40 },
+      { header: '箱子数量', key: 'boxCount', width: 10 },
+      { header: '编号', key: 'boxNumbers', width: 30 }
+    ];
+    
+    // 处理每个FBA发货文件
+    let totalProcessedItems = 0;
+    
+    for (const fileData of invoiceFileList.value) {
+      const file = fileData.file;
+      console.log(`开始处理文件: ${file.name}`);
+      const reader = new FileReader();
+      
+      await new Promise((resolve, reject) => {
+        reader.onload = async function(e) {
+          try {
+            const csvContent = e.target.result;
+            console.log(`文件 ${file.name} 内容长度:`, csvContent.length);
+            
+            // 显示CSV文件前几行内容
+            const firstLines = csvContent.split('\n').slice(0, 5).join('\n');
+            console.log(`文件 ${file.name} 前5行内容:`);
+            console.log(firstLines);
+            
+            const shipmentData = await processShipmentFile(csvContent, file.name, skuMap);
+            console.log(`文件 ${file.name} 处理结果:`, shipmentData.length, '个商品');
+            
+            if (shipmentData.length === 0) {
+              console.warn(`文件 ${file.name} 未找到任何匹配的商品信息`);
+            }
+            
+            totalProcessedItems += shipmentData.length;
+            
+            // 添加文件名到表格中并设置样式
+            resultSheet.addRow([file.name]).eachCell(cell => {
+              cell.fill = {
+                type: 'pattern',
+                pattern: 'solid',
+                fgColor: { argb: 'FFFFFF99' }
+              };
+              cell.font = {
+                bold: true
+              };
+            });
+            
+            // 按商品名称排序
+            shipmentData.sort((a, b) => a.name.localeCompare(b.name));
+            
+            // 添加商品数据
+            for (const item of shipmentData) {
+              resultSheet.addRow([
+                item.name,
+                item.boxCount,
+                item.boxNumbers.join(', ')
+              ]);
+            }
+            
+            // 添加空行
+            resultSheet.addRow([]);
+            
+            resolve();
+          } catch (error) {
+            console.error(`处理文件 ${file.name} 时出错:`, error);
+            reject(error);
+          }
+        };
+        
+        reader.onerror = (e) => {
+          console.error(`读取文件 ${file.name} 时出错:`, e);
+          reject(new Error(`读取文件 ${file.name} 时出错`));
+        };
+        
+        reader.readAsText(file);
+      });
+    }
+    
+    console.log(`所有文件处理完成，总共处理了${totalProcessedItems}个商品`);
+    
+    if (totalProcessedItems === 0) {
+      ElMessage.warning('未找到任何匹配的商品信息，请检查上传的文件格式是否正确');
+    }
+    
+    // 生成并下载Excel文件
+    const buffer = await resultWorkbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    FileSaver.saveAs(blob, `贴标_${new Date().toISOString().substring(0, 10)}.xlsx`);
+    
+    ElMessage.success('贴标文件生成成功');
+  } catch (error) {
+    console.error('生成贴标文件时出错:', error);
+    ElMessage.error(`生成贴标文件时出错: ${error.message}`);
+  }
+};
+
+// 处理发货文件
+const processShipmentFile = async (csvContent, fileName, skuMap) => {
+  return new Promise((resolve, reject) => {
+    try {
+      console.log(`开始处理发货文件: ${fileName}`);
+      
+      // 检查skuMap是否有数据
+      const skuMapSize = Object.keys(skuMap).length;
+      console.log(`skuMap包含${skuMapSize}个SKU映射`);
+      
+      // 解析CSV内容
+      const lines = csvContent.split('\n');
+      console.log(`CSV文件包含${lines.length}行`);
+      
+      // 查找SKU和数量所在的列
+      let skuColumnIndex = -1;
+      let quantityColumnIndex = -1;
+      let boxNumberColumnIndex = -1;
+      let headerRowIndex = -1;
+      
+      // 找到表头行
+      for (let i = 0; i < Math.min(20, lines.length); i++) {
+        const headerCells = lines[i].split(',');
+        console.log(`检查第${i+1}行是否包含表头:`, headerCells.join('|'));
+        
+        for (let j = 0; j < headerCells.length; j++) {
+          const cell = headerCells[j].trim().toLowerCase();
+          
+          // 检查是否包含SKU关键词
+          if (cell === '"sku"') {
+            skuColumnIndex = j;
+            headerRowIndex = i;
+            console.log(`找到SKU列，索引为${j+1}，行号为${i+1}，值为"${cell}"`);
+          } 
+          // 检查是否包含数量关键词
+          else if (cell.includes('箱子总数')) {
+            quantityColumnIndex = j;
+            console.log(`找到数量列，索引为${j+1}，值为"${cell}"`);
+          } 
+          // 检查是否包含箱号关键词
+          else if (cell.includes('箱号')) {
+            boxNumberColumnIndex = j;
+            console.log(`找到箱号列，索引为${j+1}，值为"${cell}"`);
+          }
+        }
+        
+        if (skuColumnIndex >= 0 && quantityColumnIndex >= 0 && boxNumberColumnIndex >= 0) {
+          console.log(`已找到所有必要列，在第${i+1}行`);
+          headerRowIndex = i;
+          break;
+        }
+      }
+      
+      if (skuColumnIndex < 0 || quantityColumnIndex < 0 || boxNumberColumnIndex < 0) {
+        console.error(`未找到必要的列信息：SKU列=${skuColumnIndex}, 数量列=${quantityColumnIndex}, 箱号列=${boxNumberColumnIndex}`);
+        throw new Error(`无法在文件 ${fileName} 中找到必要的列（SKU、数量、箱号）`);
+      }
+      
+      // 解析数据行
+      const shipmentItems = {};
+      let matchedSkuCount = 0;
+      let unmatchedSkuCount = 0;
+      
+      // 从表头行的下一行开始处理数据
+      console.log(`开始从第${headerRowIndex + 2}行处理数据`);
+      
+      // 显示前10个SKU的样例
+      console.log('SKU映射样例:');
+      const skuSamples = Object.keys(skuMap).slice(0, 10);
+      console.log(skuSamples);
+      
+      for (let i = headerRowIndex + 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        
+        // 打印前几行数据以便调试
+        if (i <= headerRowIndex + 5) {
+          console.log(`处理第${i+1}行数据: ${line}`);
+        }
+        
+        // 更复杂的CSV解析逻辑，处理可能包含逗号的引号字段
+        let cells = [];
+        let currentValue = "";
+        let insideQuotes = false;
+        
+        for (let j = 0; j < line.length; j++) {
+          if (line[j] === '"' && (j === 0 || line[j-1] !== '\\')) {
+            insideQuotes = !insideQuotes;
+          } else if (line[j] === ',' && !insideQuotes) {
+            cells.push(currentValue.trim());
+            currentValue = "";
+          } else {
+            currentValue += line[j];
+          }
+        }
+        
+        // 添加最后一个值
+        cells.push(currentValue.trim());
+        
+        if (cells.length <= Math.max(skuColumnIndex, quantityColumnIndex, boxNumberColumnIndex)) {
+          if (i <= headerRowIndex + 5) {
+            console.log(`跳过行 ${i+1}，因为列数不足: ${cells.length}`);
+          }
+          continue; // 跳过无效行
+        }
+        
+        // 提取SKU，处理可能的引号
+        let sku = cells[skuColumnIndex];
+        if (sku && sku.startsWith('"') && sku.endsWith('"')) {
+          sku = sku.substring(1, sku.length - 1);
+        }
+        sku = sku.trim();
+        
+        // 提取数量和箱号
+        let quantity = cells[quantityColumnIndex];
+        if (quantity && quantity.startsWith('"') && quantity.endsWith('"')) {
+          quantity = quantity.substring(1, quantity.length - 1);
+        }
+        quantity = parseInt(quantity.trim(), 10);
+        
+        let boxNumber = cells[boxNumberColumnIndex];
+        if (boxNumber && boxNumber.startsWith('"') && boxNumber.endsWith('"')) {
+          boxNumber = boxNumber.substring(1, boxNumber.length - 1);
+        }
+        boxNumber = boxNumber.trim();
+        
+        // 打印前几行的提取结果
+        if (i <= headerRowIndex + 5) {
+          console.log(`第${i+1}行: SKU="${sku}", 数量=${quantity}, 箱号="${boxNumber}"`);
+        }
+        
+        if (!sku || isNaN(quantity) || !boxNumber) {
+          if (i <= headerRowIndex + 5) {
+            console.log(`跳过行 ${i+1}，因为数据无效: SKU=${sku}, 数量=${quantity}, 箱号=${boxNumber}`);
+          }
+          continue; // 跳过无效数据
+        }
+        
+        // 查找商品信息
+        const productInfo = skuMap[sku];
+        if (i <= headerRowIndex + 5) {
+          console.log(`查找SKU="${sku}"的商品信息: ${productInfo ? '找到' : '未找到'}`);
+        }
+        
+        if (!productInfo) {
+          unmatchedSkuCount++;
+          if (unmatchedSkuCount <= 20) { // 增加未匹配SKU的日志数量
+            console.warn(`未找到SKU "${sku}" 的商品信息`);
+          }
+          continue;
+        }
+        
+        matchedSkuCount++;
+        
+        // 更新或创建商品数据
+        if (!shipmentItems[sku]) {
+          shipmentItems[sku] = {
+            sku: sku,
+            name: productInfo.name || sku,
+            boxCount: 0,
+            boxNumbers: []
+          };
+        }
+        
+        // 累加数量而不是增加1
+        shipmentItems[sku].boxCount += quantity;
+        
+        // 处理箱号，可能是逗号分隔的多个箱号
+        if (boxNumber) {
+          // 拆分boxNumber，可能包含多个箱号（逗号分隔）
+          const boxNums = boxNumber.split(/[,，、\s]+/).filter(bn => bn.trim());
+          
+          // 添加所有箱号到boxNumbers数组
+          for (const bn of boxNums) {
+            if (bn.trim() && !shipmentItems[sku].boxNumbers.includes(bn.trim())) {
+              shipmentItems[sku].boxNumbers.push(bn.trim());
+            }
+          }
+        }
+      }
+      
+      // 转换对象为数组
+      const result = Object.values(shipmentItems);
+      
+      console.log(`文件 ${fileName} 处理完成：`);
+      console.log(`- 匹配的SKU数量: ${matchedSkuCount}`);
+      console.log(`- 未匹配的SKU数量: ${unmatchedSkuCount}`);
+      console.log(`- 总商品数量: ${result.length}`);
+      
+      if (result.length > 0) {
+        console.log('处理结果样例:');
+        console.log(result.slice(0, 2));
+      } else {
+        console.log('没有找到任何匹配的商品信息，请检查SKU格式或确保产品库存文件中包含对应的SKU');
+      }
+      
+      resolve(result);
+    } catch (error) {
+      console.error(`处理文件 ${fileName} 时出错:`, error);
+      reject(error);
+    }
+  });
+};
 </script>
 
 <template>
@@ -2480,6 +2956,10 @@ watch(
         <h1>喜悦发补货计划</h1>
       </div>
       <div class="header-actions">
+        <!-- 添加生成发票按钮 -->
+        <el-button type="primary" @click="goToInvoicePage" style="margin-right: 15px;">
+          生成发票
+        </el-button>
         <el-button type="text" @click="resetUploads" :disabled="fileList.length === 0">
           重置
         </el-button>
@@ -2488,6 +2968,8 @@ watch(
     
     <!-- 主要内容 -->
     <main class="app-content">
+      <!-- 主页内容 -->
+      <div v-if="currentPage === 'main'">
       <div v-if="uploadStep === 1" class="upload-section">
         <div class="intro-text">
           <h2>欢迎使用喜悦发补货计划系统</h2>
@@ -2666,237 +3148,310 @@ watch(
       
       <div v-else-if="uploadStep === 2" class="results-section">
         <div class="results-header">
-          <h2>产品库存及周转统计</h2>
-          <p>已完成数据处理，您可以在这里查看和编辑"最终计算每天平均"数据</p>
+            <h2>产品库存及周转统计</h2>
+            <p>已完成数据处理，您可以在这里查看和编辑"最终计算每天平均"数据</p>
         </div>
         
-        <div class="inventory-table-section">
-          <div class="table-instruction">
-            <el-alert
-              title="编辑说明"
-              type="info"
-              description="修改'最终计算每天平均'列的数值后，点击输入框外部或按回车键确认，系统将自动重新计算FBA周转、总周转以及发货和补货数量。"
-              show-icon
-              :closable="false"
-              style="margin-bottom: 15px;"
-            />
-            
-            <!-- 添加"最终计算每天平均系数"控件 -->
-            <div class="coefficient-control">
-              <div class="coefficient-wrapper">
-                <div class="coefficient-label">最终计算每天平均系数：</div>
-                <el-input-number 
-                  v-model="finalDailyAvgCoefficient" 
-                  :min="0.1" 
-                  :max="5" 
-                  :step="0.05"
-                  :precision="2"
-                  size="small"
-                  style="width: 120px"
-                />
-                <el-button 
-                  type="primary" 
-                  size="small" 
-                  @click="updateAllFinalDailyAverages"
-                  style="margin-left: 10px"
-                >
-                  应用到全表
-                </el-button>
-              </div>
-              <div class="coefficient-hint">
-                （默认1.25，修改后点击"应用到全表"更新所有数据）
-              </div>
-            </div>
-          </div>
-          
-          <el-table :data="getInventoryTableData()" style="width: 100%" height="450">
-            <el-table-column prop="productName" label="产品名称" min-width="180" show-overflow-tooltip fixed="left"></el-table-column>
-            <el-table-column prop="asin" label="ASIN" width="120"></el-table-column>
-            <el-table-column prop="factoryInventory" label="工厂库存" width="100"></el-table-column>
-            <el-table-column prop="fbaInventory" label="FBA库存" width="100"></el-table-column>
-            <el-table-column prop="totalInventory" label="总库存" width="100"></el-table-column>
-            <el-table-column prop="sevenDayAvg" label="7天平均" width="100"></el-table-column>
-            <el-table-column prop="thirtyDayAvg" label="30天平均" width="100"></el-table-column>
-            <el-table-column label="最终计算每天平均" width="180">
-              <template #default="scope">
-                <el-input 
-                  v-model.number="scope.row.finalDailyAvg" 
-                  @change="updateFinalDailyAverage(scope.row)"
-                  type="number" 
-                  step="0.01"
-                  size="small"
-                  class="final-avg-input"
-                ></el-input>
-              </template>
-            </el-table-column>
-            <el-table-column label="FBA周转" width="100">
-              <template #default="scope">
-                {{ formatNumber(scope.row.fbaRotation) }}
-              </template>
-            </el-table-column>
-            <el-table-column label="总周转" width="100">
-              <template #default="scope">
-                {{ formatNumber(scope.row.totalRotation) }}
-              </template>
-            </el-table-column>
-            <el-table-column label="补货数量" width="100">
-              <template #default="scope">
-                {{ scope.row.maxReplenishment }}
-              </template>
-            </el-table-column>
-            <el-table-column label="发货数量" width="100">
-              <template #default="scope">
-                {{ scope.row.maxShipping }}
-              </template>
-            </el-table-column>
-          </el-table>
-          
-          <div class="action-buttons" style="margin-top: 20px; text-align: center;">
-            <el-button type="primary" size="large" @click="downloadResultFile">
-              <el-icon><Download /></el-icon>
-              下载产品库存及周转统计
-            </el-button>
-            <el-button type="success" size="large" @click="goToFinalResults">
-              下一步：查看发补货计划
-            </el-button>
-          </div>
-        </div>
-      </div>
-      
-      <div v-else-if="uploadStep === 3" class="results-section">
-        <div class="results-header">
-          <h2>发补货计划生成结果</h2>
-          <p>已完成文件处理，以下是重点数据预览</p>
-        </div>
-        
-        <!-- 补货计划结果 -->
-        <div class="results-placeholder">
-          
-          <!-- 未匹配ASIN列表 -->
-          <div class="unmatched-asins-section" v-if="processedData.unmatchedAsins.length > 0">
-            <h3 class="section-title">喜悦库存中存在但产品库存表中未找到的ASIN</h3>
-            <el-table :data="processedData.unmatchedAsins" style="width: 100%; margin-top: 0.5rem;">
-              <el-table-column prop="asin" label="ASIN" width="150"></el-table-column>
-              <el-table-column prop="name" label="产品名称" min-width="300"></el-table-column>
-              <el-table-column prop="inventory" label="库存数量" width="120"></el-table-column>
-            </el-table>
-          </div>
-          
-          <!-- 在未匹配产品信息下方添加模版预览表格 -->
-          <div class="result-container">
-            <!-- 模版预览部分 -->
-            <div class="templates-preview-section">
-              <!-- 发货预览表格 -->
-              <div class="template-preview" v-if="processedTemplates.shippingTemplate">
-                <h4 class="template-title">发货预览</h4>
-                <div class="template-table-container full-width">
-                  <table class="template-table">
-                    <thead>
-                      <tr>
-                        <th width="25%">名称</th>
-                        <th width="18%">FNSKU</th>
-                        <th width="15%">每箱数量</th>
-                        <th width="15%">发货数量</th>
-                        <th width="17%">共多少箱</th>
-                        <th width="10%">操作</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr v-for="(row, index) in getShippingPreviewData()" :key="index">
-                        <td title="{{row.name}}">{{ row.name }}</td>
-                        <td>{{ row.fnsku }}</td>
-                        <td>{{ row.boxQuantity || 0 }}</td>
-                        <td class="shipping-qty">{{ row.shippingQuantity || 0 }}</td>
-                        <td>{{ row.boxCount || 0 }}</td>
-                        <td>
-                          <div class="action-buttons">
-                            <el-button size="small" type="danger" @click="deleteShippingItem(row, index)">删除</el-button>
-                            <el-button size="small" type="primary" @click="makeItFiveBoxes(row, index)">凑5箱</el-button>
-                          </div>
-                        </td>
-                      </tr>
-                      <tr v-if="getShippingPreviewData().length === 0">
-                        <td colspan="6" class="no-data">没有需要发货的产品</td>
-                      </tr>
-                    </tbody>
-                  </table>
+          <div class="inventory-table-section">
+            <div class="table-instruction">
+              <el-alert
+                title="编辑说明"
+                type="info"
+                description="修改'最终计算每天平均'列的数值后，点击输入框外部或按回车键确认，系统将自动重新计算FBA周转、总周转以及发货和补货数量。"
+                show-icon
+                :closable="false"
+                style="margin-bottom: 15px;"
+              />
+              
+              <!-- 添加"最终计算每天平均系数"控件 -->
+              <div class="coefficient-control">
+                <div class="coefficient-wrapper">
+                  <div class="coefficient-label">最终计算每天平均系数：</div>
+                  <el-input-number 
+                    v-model="finalDailyAvgCoefficient" 
+                    :min="0.1" 
+                    :max="5" 
+                    :step="0.05"
+                    :precision="2"
+                    size="small"
+                    style="width: 120px"
+                  />
+                  <el-button 
+                    type="primary" 
+                    size="small" 
+                    @click="updateAllFinalDailyAverages"
+                    style="margin-left: 10px"
+                  >
+                    应用到全表
+                  </el-button>
+                </div>
+                <div class="coefficient-hint">
+                  （默认1.25，修改后点击"应用到全表"更新所有数据）
                 </div>
               </div>
             </div>
-          </div>
-          
-          <div class="result-actions">
-            <div class="action-group">
-              <h4>统计表</h4>
+            
+            <el-table :data="getInventoryTableData()" style="width: 100%" height="450">
+              <el-table-column prop="productName" label="产品名称" min-width="180" show-overflow-tooltip fixed="left"></el-table-column>
+              <el-table-column prop="asin" label="ASIN" width="120"></el-table-column>
+              <el-table-column prop="factoryInventory" label="工厂库存" width="100"></el-table-column>
+              <el-table-column prop="fbaInventory" label="FBA库存" width="100"></el-table-column>
+              <el-table-column prop="totalInventory" label="总库存" width="100"></el-table-column>
+              <el-table-column prop="sevenDayAvg" label="7天平均" width="100"></el-table-column>
+              <el-table-column prop="thirtyDayAvg" label="30天平均" width="100"></el-table-column>
+              <el-table-column label="最终计算每天平均" width="180">
+                <template #default="scope">
+                  <el-input 
+                    v-model.number="scope.row.finalDailyAvg" 
+                    @change="updateFinalDailyAverage(scope.row)"
+                    type="number" 
+                    step="0.01"
+                    size="small"
+                    class="final-avg-input"
+                  ></el-input>
+                </template>
+              </el-table-column>
+              <el-table-column label="FBA周转" width="100">
+                <template #default="scope">
+                  {{ formatNumber(scope.row.fbaRotation) }}
+                </template>
+              </el-table-column>
+              <el-table-column label="总周转" width="100">
+                <template #default="scope">
+                  {{ formatNumber(scope.row.totalRotation) }}
+                </template>
+              </el-table-column>
+              <el-table-column label="补货数量" width="100">
+                <template #default="scope">
+                  {{ scope.row.maxReplenishment }}
+                </template>
+              </el-table-column>
+              <el-table-column label="发货数量" width="100">
+                <template #default="scope">
+                  {{ scope.row.maxShipping }}
+                </template>
+              </el-table-column>
+            </el-table>
+            
+            <div class="action-buttons" style="margin-top: 20px; text-align: center;">
               <el-button type="primary" size="large" @click="downloadResultFile">
                 <el-icon><Download /></el-icon>
                 下载产品库存及周转统计
               </el-button>
+              <el-button type="success" size="large" @click="goToFinalResults">
+                下一步：查看发补货计划
+              </el-button>
             </div>
+          </div>
+        </div>
+        
+        <div v-else-if="uploadStep === 3" class="results-section">
+          <div class="results-header">
+            <h2>发补货计划生成结果</h2>
+            <p>已完成文件处理，以下是重点数据预览</p>
+          </div>
+          
+          <!-- 补货计划结果 -->
+        <div class="results-placeholder">
             
-            <div class="action-group">
-              <h4>补货/发货模版</h4>
-              <div class="template-buttons">
-                <el-button type="success" size="large" @click="downloadReplenishmentTemplate">
-                  <el-icon><Download /></el-icon>
-                  下载补货模版
-                </el-button>
-                
-                <el-button type="success" size="large" @click="downloadShippingTemplate">
-                  <el-icon><Download /></el-icon>
-                  下载发货模版
-                </el-button>
-                
-                <el-button type="success" size="large" @click="downloadBackendShippingTemplate">
-                  <el-icon><Download /></el-icon>
-                  下载后台发货模版
-                </el-button>
+            <!-- 未匹配ASIN列表 -->
+            <div class="unmatched-asins-section" v-if="processedData.unmatchedAsins.length > 0">
+              <h3 class="section-title">喜悦库存中存在但产品库存表中未找到的ASIN</h3>
+              <el-table :data="processedData.unmatchedAsins" style="width: 100%; margin-top: 0.5rem;">
+                <el-table-column prop="asin" label="ASIN" width="150"></el-table-column>
+                <el-table-column prop="name" label="产品名称" min-width="300"></el-table-column>
+                <el-table-column prop="inventory" label="库存数量" width="120"></el-table-column>
+              </el-table>
+          </div>
+            
+            <!-- 在未匹配产品信息下方添加模版预览表格 -->
+            <div class="result-container">
+              <!-- 模版预览部分 -->
+              <div class="templates-preview-section">
+                <!-- 发货预览表格 -->
+                <div class="template-preview" v-if="processedTemplates.shippingTemplate">
+                  <h4 class="template-title">发货预览</h4>
+                  <div class="template-table-container full-width">
+                    <table class="template-table">
+                      <thead>
+                        <tr>
+                          <th width="25%">名称</th>
+                          <th width="18%">FNSKU</th>
+                          <th width="15%">每箱数量</th>
+                          <th width="15%">发货数量</th>
+                          <th width="17%">共多少箱</th>
+                          <th width="10%">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="(row, index) in getShippingPreviewData()" :key="index">
+                          <td title="{{row.name}}">{{ row.name }}</td>
+                          <td>{{ row.fnsku }}</td>
+                          <td>{{ row.boxQuantity || 0 }}</td>
+                          <td class="shipping-qty">{{ row.shippingQuantity || 0 }}</td>
+                          <td>{{ row.boxCount || 0 }}</td>
+                          <td>
+                            <div class="action-buttons">
+                              <el-button size="small" type="danger" @click="deleteShippingItem(row, index)">删除</el-button>
+                              <el-button size="small" type="primary" @click="makeItFiveBoxes(row, index)">凑5箱</el-button>
+                            </div>
+                          </td>
+                        </tr>
+                        <tr v-if="getShippingPreviewData().length === 0">
+                          <td colspan="6" class="no-data">没有需要发货的产品</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               </div>
             </div>
             
-            <div class="action-group">
-              <div class="buttons">
-                <!-- 删除"下载结果处理文件"按钮，因为它与"下载产品库存及周转统计"功能重复 -->
-                
-                <!-- 货值统计 -->
-                <div class="value-statistics-section">
-                  <!-- 统计结果显示 -->
-                  <div class="value-statistics-text">
-                    {{ inventoryStats.statsText }}
+          <div class="result-actions">
+              <div class="action-group">
+                <h4>统计表</h4>
+                <el-button type="primary" size="large" @click="downloadResultFile">
+                  <el-icon><Download /></el-icon>
+                  下载产品库存及周转统计
+                </el-button>
+              </div>
+              
+              <div class="action-group">
+                <h4>补货/发货模版</h4>
+                <div class="template-buttons">
+                  <el-button type="success" size="large" @click="downloadReplenishmentTemplate">
+                    <el-icon><Download /></el-icon>
+                    下载补货模版
+                  </el-button>
+                  
+                  <el-button type="success" size="large" @click="downloadShippingTemplate">
+                    <el-icon><Download /></el-icon>
+                    下载发货模版
+                  </el-button>
+                  
+                  <el-button type="success" size="large" @click="downloadBackendShippingTemplate">
+                    <el-icon><Download /></el-icon>
+                    下载后台发货模版
+                  </el-button>
+                </div>
+              </div>
+              
+              <div class="action-group">
+                <div class="buttons">
+                  <!-- 删除"下载结果处理文件"按钮，因为它与"下载产品库存及周转统计"功能重复 -->
+                  
+                  <!-- 货值统计 -->
+                  <div class="value-statistics-section">
+                    <!-- 统计结果显示 -->
+                    <div class="value-statistics-text">
+                      {{ inventoryStats.statsText }}
+                    </div>
+                    
+                    <!-- 简洁的输入框设计 -->
+                    <div class="simple-inputs-row">
+                      <div class="simple-input-group">
+                        <label>美元汇率</label>
+                        <el-input v-model="inventoryStats.exchangeRate" type="number" size="small" placeholder="美元汇率" />
+                      </div>
+                      <div class="simple-input-group">
+                        <label>工厂未付款(¥)</label>
+                        <el-input v-model="inventoryStats.factoryUnpaid" type="number" size="small" placeholder="工厂未付款" />
+                      </div>
+                      <div class="simple-input-group">
+                        <label>亚马逊预收款($)</label>
+                        <el-input v-model="inventoryStats.amazonAdvance" type="number" size="small" placeholder="亚马逊预收款" />
+                      </div>
+                      <div class="simple-input-group">
+                        <label>银信致汇预收款($)</label>
+                        <el-input v-model="inventoryStats.yinxinAdvance" type="number" size="small" placeholder="银信致汇预收款" />
+                      </div>
+                    </div>
                   </div>
                   
-                  <!-- 简洁的输入框设计 -->
-                  <div class="simple-inputs-row">
-                    <div class="simple-input-group">
-                      <label>美元汇率</label>
-                      <el-input v-model="inventoryStats.exchangeRate" type="number" size="small" placeholder="美元汇率" />
-                    </div>
-                    <div class="simple-input-group">
-                      <label>工厂未付款(¥)</label>
-                      <el-input v-model="inventoryStats.factoryUnpaid" type="number" size="small" placeholder="工厂未付款" />
-                    </div>
-                    <div class="simple-input-group">
-                      <label>亚马逊预收款($)</label>
-                      <el-input v-model="inventoryStats.amazonAdvance" type="number" size="small" placeholder="亚马逊预收款" />
-                    </div>
-                    <div class="simple-input-group">
-                      <label>银信致汇预收款($)</label>
-                      <el-input v-model="inventoryStats.yinxinAdvance" type="number" size="small" placeholder="银信致汇预收款" />
-                    </div>
-                  </div>
-                </div>
-                
             <el-button @click="uploadStep = 1" size="large">返回上传页</el-button>
+          </div>
               </div>
             </div>
           </div>
+        </div>
+      </div>
+      
+      <!-- 生成发票页面 -->
+      <div v-else-if="currentPage === 'invoice'" class="invoice-section">
+        <div class="invoice-header">
+          <h2>生成发票</h2>
+          <p>上传FBA发货文件，系统将自动生成贴标Excel</p>
+          <el-button @click="goToMainPage" size="small" style="margin-bottom: 15px;">
+            返回主页
+          </el-button>
+        </div>
+        
+        <!-- 拖拽上传发货文件区域 -->
+        <div 
+          class="drop-zone"
+          @dragenter.prevent
+          @dragover.prevent
+          @dragleave.prevent
+          @drop.prevent="handleInvoiceDrop"
+          @click="triggerInvoiceFileSelect"
+        >
+          <div class="drop-icon">
+            <el-icon><Upload /></el-icon>
+          </div>
+          <h3>拖拽FBA发货文件到此处，或点击上传</h3>
+          <p>支持同时上传多个文件，文件名需以"FBA"开头且为CSV格式</p>
+        </div>
+        
+        <!-- 发货文件列表 -->
+        <div class="uploaded-files-section" v-if="invoiceFileList.length > 0">
+          <h3>已上传文件</h3>
+          <el-table :data="invoiceFileList" style="width: 100%">
+            <el-table-column prop="name" label="文件名" min-width="250"></el-table-column>
+            <el-table-column prop="type" label="类型" width="150">
+              <template #default="scope">
+                <span>FBA发货文件</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="size" label="文件大小" width="120"></el-table-column>
+            <el-table-column prop="status" label="状态" width="100">
+              <template #default="scope">
+                <el-tag type="success" v-if="scope.row.status === 'uploaded'">已上传</el-tag>
+                <el-tag type="warning" v-else>处理中</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="100">
+              <template #default="scope">
+                <el-button 
+                  type="danger" 
+                  size="small" 
+                  circle
+                  @click="invoiceFileList.splice(scope.$index, 1)"
+                >
+                  <el-icon><Delete /></el-icon>
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+        
+        <!-- 生成按钮 -->
+        <div class="process-actions">
+          <el-button 
+            type="primary" 
+            :disabled="invoiceFileList.length === 0" 
+            @click="generateInvoiceFile"
+            size="large"
+            style="margin-top: 20px;"
+          >
+            生成贴标文件
+          </el-button>
         </div>
       </div>
     </main>
     
     <!-- 页脚 -->
     <footer class="app-footer">
-      <p>© 2024 喜悦收纳整理 - 让生活更有条理</p>
+      <p>© 2023 喜悦发补货计划 - 版本 1.0.0</p>
     </footer>
   </div>
 </template>
@@ -3731,5 +4286,28 @@ body {
   color: #909399;
   margin-top: 10px;
   padding-left: 2px;
+}
+
+/* 发票页面样式 */
+.invoice-section {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.invoice-header {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.invoice-header h2 {
+  font-size: 1.8rem;
+  margin-bottom: 10px;
+  color: #303133;
+}
+
+.invoice-header p {
+  color: #606266;
+  font-size: 1rem;
 }
 </style>
