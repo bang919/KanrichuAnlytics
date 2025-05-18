@@ -2577,7 +2577,7 @@ const generateInvoiceFile = async () => {
   }
   
   try {
-    console.log('开始生成贴标文件...');
+    console.log('开始生成贴标文件和发票文件...');
     console.log('上传的文件数量:', invoiceFileList.value.length);
     
     // 加载产品库存及周转统计文件
@@ -2614,9 +2614,9 @@ const generateInvoiceFile = async () => {
       const asin = row.getCell(2).value; // ASIN
       const fnsku = row.getCell(31).value; // FNSKU - AE列
       const boxQuantity = row.getCell(20).value || 0; // 装箱数量 - T列
-      const boxLength = row.getCell(33).value || 0; // 箱子长 - AF列
-      const boxWidth = row.getCell(34).value || 0; // 箱子宽 - AG列
-      const boxHeight = row.getCell(35).value || 0; // 箱子高 - AH列
+      const boxLength = row.getCell(32).value || 0; // 箱子长 - AF列
+      const boxWidth = row.getCell(33).value || 0; // 箱子宽 - AG列
+      const boxHeight = row.getCell(34).value || 0; // 箱子高 - AH列
       
       skuMap[sku] = {
         name: productName,
@@ -2651,12 +2651,20 @@ const generateInvoiceFile = async () => {
       { header: '编号', key: 'boxNumbers', width: 30 }
     ];
     
+    // 用于记录每个仓库的发货数据，用于后续生成发票
+    const warehouseShipments = {};
+    
     // 处理每个FBA发货文件
     let totalProcessedItems = 0;
     
     for (const fileData of invoiceFileList.value) {
       const file = fileData.file;
       console.log(`开始处理文件: ${file.name}`);
+      
+      // 从文件名中解析信息
+      const filenameInfo = parseFilename(file.name);
+      console.log('从文件名解析的信息:', filenameInfo);
+      
       const reader = new FileReader();
       
       await new Promise((resolve, reject) => {
@@ -2706,6 +2714,24 @@ const generateInvoiceFile = async () => {
             // 添加空行
             resultSheet.addRow([]);
             
+            // 保存发货数据用于生成发票
+            if (filenameInfo.warehouseCode) {
+              if (!warehouseShipments[filenameInfo.warehouseCode]) {
+                warehouseShipments[filenameInfo.warehouseCode] = {
+                  fbaNumber: filenameInfo.fbaNumber,
+                  poNumber: filenameInfo.poNumber,
+                  warehouseCode: filenameInfo.warehouseCode,
+                  items: []
+                };
+              }
+              
+              // 添加商品到仓库发货数据
+              warehouseShipments[filenameInfo.warehouseCode].items = [
+                ...warehouseShipments[filenameInfo.warehouseCode].items,
+                ...shipmentData
+              ];
+            }
+            
             resolve();
           } catch (error) {
             console.error(`处理文件 ${file.name} 时出错:`, error);
@@ -2728,15 +2754,218 @@ const generateInvoiceFile = async () => {
       ElMessage.warning('未找到任何匹配的商品信息，请检查上传的文件格式是否正确');
     }
     
-    // 生成并下载Excel文件
+    // 生成并下载贴标Excel文件
     const buffer = await resultWorkbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     FileSaver.saveAs(blob, `贴标_${new Date().toISOString().substring(0, 10)}.xlsx`);
     
-    ElMessage.success('贴标文件生成成功');
+    // 为每个仓库生成发票
+    await generateInvoicesForWarehouses(warehouseShipments, skuMap);
+    
+    ElMessage.success('贴标文件和发票文件生成成功');
   } catch (error) {
     console.error('生成贴标文件时出错:', error);
     ElMessage.error(`生成贴标文件时出错: ${error.message}`);
+  }
+};
+
+// 从文件名解析FBA编号、PO号和仓库号
+const parseFilename = (filename) => {
+  try {
+    // 移除文件扩展名
+    const nameWithoutExt = filename.replace(/\.(csv|xlsx)$/i, '');
+    
+    // 尝试匹配格式为 FBAXXXXXXXX_XXXXXXXX_XXX 的文件名
+    const parts = nameWithoutExt.split('_');
+    
+    // 至少需要3部分才能提取所有信息
+    if (parts.length >= 3) {
+      return {
+        fbaNumber: parts[0],
+        poNumber: parts[1],
+        warehouseCode: parts[2]
+      };
+    }
+    
+    // 如果只有2部分，尝试以第一部分为FBA编号，第二部分为仓库号
+    if (parts.length === 2) {
+      return {
+        fbaNumber: parts[0],
+        poNumber: '',
+        warehouseCode: parts[1]
+      };
+    }
+    
+    // 如果只有1部分，将其视为FBA编号
+    return {
+      fbaNumber: parts[0],
+      poNumber: '',
+      warehouseCode: ''
+    };
+  } catch (error) {
+    console.error('解析文件名时出错:', error);
+    return {
+      fbaNumber: '',
+      poNumber: '',
+      warehouseCode: ''
+    };
+  }
+};
+
+// 为每个仓库生成发票
+const generateInvoicesForWarehouses = async (warehouseShipments, skuMap) => {
+  try {
+    console.log('开始为仓库生成发票，仓库数量:', Object.keys(warehouseShipments).length);
+    
+    // 加载发票模板
+    const response = await fetch('/喜悦发票.xlsx');
+    if (!response.ok) {
+      throw new Error(`获取发票模板失败: ${response.status} ${response.statusText}`);
+    }
+    
+    const arrayBuffer = await response.arrayBuffer();
+    console.log('发票模板文件大小:', arrayBuffer.byteLength, '字节');
+    
+    // 为每个仓库生成发票
+    for (const warehouseCode in warehouseShipments) {
+      const shipmentData = warehouseShipments[warehouseCode];
+      
+      // 跳过没有物品的仓库
+      if (!shipmentData.items || shipmentData.items.length === 0) {
+        console.warn(`仓库 ${warehouseCode} 没有物品，跳过生成发票`);
+        continue;
+      }
+      
+      await generateInvoiceForWarehouse(arrayBuffer, shipmentData, skuMap);
+    }
+  } catch (error) {
+    console.error('生成发票文件时出错:', error);
+    throw error;
+  }
+};
+
+// 为单个仓库生成发票
+const generateInvoiceForWarehouse = async (templateArrayBuffer, shipmentData, skuMap) => {
+  try {
+    const { fbaNumber, poNumber, warehouseCode, items } = shipmentData;
+    console.log(`为仓库 ${warehouseCode} 生成发票，FBA编号: ${fbaNumber}, PO号: ${poNumber}, 物品数量: ${items.length}`);
+    
+    // 加载模板
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(templateArrayBuffer);
+    
+    // 假设第一个工作表是发票模板
+    const worksheet = workbook.worksheets[0];
+    
+    // 计算总数量和总箱数
+    let totalQuantity = 0;
+    let totalBoxes = 0;
+    
+    items.forEach(item => {
+      totalQuantity += item.boxCount;
+      totalBoxes += item.boxNumbers.length;
+    });
+    
+    console.log(`商品总数量: ${totalQuantity}, 箱子总数: ${totalBoxes}`);
+    
+    // 直接设置单元格的值，不使用占位符替换
+    try {
+      // 订单号码 (FBA编号)
+      worksheet.getCell('B1').value = fbaNumber;
+      console.log(`设置单元格B1(订单号码)为: ${fbaNumber}`);
+      
+      // 地址号码 (仓库号)
+      worksheet.getCell('B3').value = warehouseCode;
+      console.log(`设置单元格B3(地址号码)为: ${warehouseCode}`);
+      worksheet.getCell('B4').value = warehouseCode;
+      console.log(`设置单元格B4(地址号码)为: ${warehouseCode}`);
+      
+      // PO号码
+      worksheet.getCell('B15').value = poNumber;
+      console.log(`设置单元格B15(PO号码)为: ${poNumber}`);
+      
+      // 箱子总数
+      worksheet.getCell('B16').value = totalBoxes;
+      console.log(`设置单元格B16(箱子总数)为: ${totalBoxes}`);      
+    } catch (error) {
+      console.error(`设置单元格值时出错:`, error);
+    }
+    
+    // 从第18行开始填写商品信息
+    const startRow = 18;
+    let currentRow = startRow;
+    
+    // 按商品名称排序
+    const sortedItems = [...items].sort((a, b) => a.name.localeCompare(b.name));
+    
+    // 默认产品通用信息
+    const defaultProductInfo = {
+      weight: 20, // 默认货箱重量(KG)
+      englishName: 'Hanging Organizer', // 默认英文品名
+      chineseName: '悬挂式收纳袋', // 默认中文品名
+      declaredPrice: 3.5, // 默认申报单价
+      material: 'Cotton', // 默认材质
+      customsCode: '6307900090', // 默认海关编码
+      usage: 'Organizer', // 默认用途
+      brand: '无', // 默认品牌
+      model: '无' // 默认型号
+    };
+    
+    // 填充商品信息
+    for (const item of sortedItems) {
+      // 为每个箱号创建一行
+      const boxNumbers = item.boxNumbers || [];
+      
+      if (boxNumbers.length === 0) {
+        // 如果没有箱号信息，至少创建一行
+        boxNumbers.push('');
+      }
+      
+      // 获取SKU对应的产品信息
+      console.log(`处理SKU: ${item.sku}, 名称: ${item.name}`);
+      
+      // 获取产品的装箱数量和尺寸，使用skuMap中的数据
+      const boxQuantity = skuMap[item.sku].boxQuantity; // 使用从skuMap中获得的每箱数量
+      const boxLength = skuMap[item.sku].boxLength; // 使用从skuMap中获得的箱子长度，如果没有则默认为30
+      const boxWidth = skuMap[item.sku].boxWidth; // 使用从skuMap中获得的箱子宽度，如果没有则默认为25
+      const boxHeight = skuMap[item.sku].boxHeight; // 使用从skuMap中获得的箱子高度，如果没有则默认为20
+      
+      console.log(`产品${item.name}的箱子信息: 装箱数量=${boxQuantity}, 尺寸=${boxLength}x${boxWidth}x${boxHeight}`);
+      
+      for (let i = 0; i < boxNumbers.length; i++) {
+        const boxNumber = boxNumbers[i];
+        const row = worksheet.getRow(currentRow);
+        
+        // 根据参考代码填充单元格
+        row.getCell(1).value = fbaNumber; // 货箱编号
+        row.getCell(2).value = poNumber; // PO Number（卡派追踪编码）
+        row.getCell(3).value = defaultProductInfo.weight; // 货箱重量(KG)
+        row.getCell(4).value = boxLength; // 货箱长度(CM)
+        row.getCell(5).value = boxWidth; // 货箱宽度(CM)
+        row.getCell(6).value = boxHeight; // 货箱高度(CM)
+        row.getCell(7).value = defaultProductInfo.englishName; // 产品英文品名
+        row.getCell(8).value = defaultProductInfo.chineseName; // 产品中文品名
+        row.getCell(9).value = defaultProductInfo.declaredPrice; // 产品申报单价
+        row.getCell(10).value = boxQuantity > 0 ? boxQuantity : 1; // 使用装箱数量作为申报数量，如果为0则默认为1
+        row.getCell(11).value = defaultProductInfo.material; // 产品材质
+        row.getCell(12).value = defaultProductInfo.customsCode; // 产品海关编码
+        row.getCell(13).value = defaultProductInfo.usage; // 产品用途
+        row.getCell(14).value = defaultProductInfo.brand; // 产品品牌
+        row.getCell(15).value = defaultProductInfo.model; // 产品型号
+        
+        currentRow++;
+      }
+    }
+    
+    // 生成并下载Excel文件
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    FileSaver.saveAs(blob, `发票_${warehouseCode}_${fbaNumber}_${new Date().toISOString().substring(0, 10)}.xlsx`);
+    
+    console.log(`仓库 ${warehouseCode} 的发票生成成功`);
+  } catch (error) {
+    console.error(`为仓库 ${shipmentData.warehouseCode} 生成发票时出错:`, error);
+    throw error;
   }
 };
 
@@ -2769,7 +2998,7 @@ const processShipmentFile = async (csvContent, fileName, skuMap) => {
           const cell = headerCells[j].trim().toLowerCase();
           
           // 检查是否包含SKU关键词
-          if (cell === '"sku"') {
+          if (cell === '"sku"'||cell === 'sku') {
             skuColumnIndex = j;
             headerRowIndex = i;
             console.log(`找到SKU列，索引为${j+1}，行号为${i+1}，值为"${cell}"`);
