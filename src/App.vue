@@ -3172,6 +3172,472 @@ const processShipmentFile = async (csvContent, fileName, skuMap) => {
     }
   });
 };
+
+// 添加回填库存数据相关的状态变量
+const backfillFiles = ref({
+  shippingPlan: null,
+  replenishmentPlan: null,
+  inventoryFile: null
+});
+
+const backfillFileReady = ref({
+  shippingPlan: false,
+  replenishmentPlan: false,
+  inventoryFile: false
+});
+
+// 识别回填库存数据文件类型
+const identifyBackfillFileType = (file) => {
+  const fileName = file.name.toLowerCase();
+  
+  if (fileName.startsWith('发货') && (fileName.endsWith('.xlsx') || fileName.endsWith('.xls'))) {
+    return 'shippingPlan';
+  } else if (fileName.startsWith('补货') && (fileName.endsWith('.xlsx') || fileName.endsWith('.xls'))) {
+    return 'replenishmentPlan';
+  } else if ((fileName.includes('库存-喜悦') || fileName.includes('喜悦库存')) && fileName.endsWith('.csv')) {
+    return 'inventoryFile';
+  }
+  
+  return 'unknown';
+};
+
+// 处理回填库存数据的文件上传
+const handleBackfillFileUpload = (files) => {
+  if (!files || files.length === 0) return;
+  
+  console.log(`准备处理${files.length}个回填文件`);
+  
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    console.log(`处理回填文件: ${file.name}, 大小: ${file.size} 字节`);
+    
+    const fileType = identifyBackfillFileType(file);
+    
+    if (fileType === 'unknown') {
+      ElMessage({
+        message: `无法识别文件类型: ${file.name}，请上传正确格式的文件`,
+        type: 'warning'
+      });
+      continue;
+    }
+    
+    // 更新文件
+    backfillFiles.value[fileType] = file;
+    backfillFileReady.value[fileType] = true;
+    
+    // 显示成功消息
+    ElMessage({
+      message: `成功上传 ${file.name}`,
+      type: 'success'
+    });
+    
+    console.log(`文件 ${file.name} 已成功添加到回填处理列表`);
+  }
+};
+
+// 删除回填文件
+const removeBackfillFile = (fileType) => {
+  backfillFiles.value[fileType] = null;
+  backfillFileReady.value[fileType] = false;
+  
+  ElMessage({
+    message: '文件已删除',
+    type: 'success'
+  });
+};
+
+// 切换到回填库存数据页面
+const goToBackfillPage = () => {
+  currentPage.value = 'backfill';
+  
+  // 重置回填文件
+  Object.keys(backfillFiles.value).forEach(key => {
+    backfillFiles.value[key] = null;
+    backfillFileReady.value[key] = false;
+  });
+};
+
+// 处理回填库存数据
+const processBackfillData = async () => {
+  if (!backfillFileReady.value.inventoryFile) {
+    ElMessage.error('请上传库存-喜悦仓库.csv文件');
+    return;
+  }
+  
+  if (!backfillFileReady.value.shippingPlan && !backfillFileReady.value.replenishmentPlan) {
+    ElMessage.error('请至少上传一个计划文件（发货计划或补货计划）');
+    return;
+  }
+  
+  try {
+    // 重置结果
+    backfillResult.value = {
+      headers: [],
+      names: [],
+      shippingQuantities: [], // 发货数量
+      replenishmentQuantities: [], // 补货数量
+      isProcessed: false
+    };
+    
+    console.log('开始处理回填库存数据...');
+    
+    // 1. 读取产品库存及周转统计.xlsx
+    const baseFileResponse = await fetch('/产品库存及周转统计.xlsx');
+    if (!baseFileResponse.ok) {
+      throw new Error(`获取产品库存文件失败: ${baseFileResponse.status} ${baseFileResponse.statusText}`);
+    }
+    
+    console.log('成功获取产品库存文件');
+    const baseFileArrayBuffer = await baseFileResponse.arrayBuffer();
+    console.log('产品库存文件大小:', baseFileArrayBuffer.byteLength, '字节');
+    
+    const baseWorkbook = XLSX.read(new Uint8Array(baseFileArrayBuffer), { type: 'array' });
+    const baseSheet = baseWorkbook.Sheets[baseWorkbook.SheetNames[0]];
+    const baseData = XLSX.utils.sheet_to_json(baseSheet);
+    
+    // 创建FNSKU到ASIN的映射
+    const fnskuToAsinMap = {};
+    baseData.forEach(row => {
+      if (row['FNSKU'] && row['ASIN']) {
+        fnskuToAsinMap[row['FNSKU']] = row['ASIN'];
+      }
+    });
+    
+    console.log(`创建了${Object.keys(fnskuToAsinMap).length}个FNSKU到ASIN的映射`);
+    
+    // 2. 读取库存-喜悦仓库.csv
+    const inventoryReader = new FileReader();
+    const inventoryData = await new Promise((resolve) => {
+      inventoryReader.onload = (e) => {
+        const csvContent = e.target.result;
+        const workbook = XLSX.read(csvContent, { type: 'string' });
+        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+        resolve(XLSX.utils.sheet_to_json(worksheet, { header: 1 }));
+      };
+      inventoryReader.readAsText(backfillFiles.value.inventoryFile);
+    });
+    
+    console.log('成功读取库存-喜悦仓库.csv，行数:', inventoryData.length);
+    
+    // 获取ASIN行（第3行，索引为2）和名称行（第2行，索引为1）
+    const nameRow = inventoryData[1] || [];
+    const asinRow = inventoryData[2] || [];
+    
+    // 创建ASIN和名称的映射
+    const asinMap = {};
+    const validAsins = [];
+    
+    // 从C列开始往右查找ASIN (索引2对应C列)
+    for (let index = 2; index < asinRow.length; index++) {
+      const asin = asinRow[index];
+      if (asin && asin.trim() !== '') {
+        asinMap[asin] = {
+          index: index,
+          name: (nameRow[index] || '').toString()
+        };
+        validAsins.push(asin);
+      }
+    }
+    
+    console.log(`在库存文件中找到${Object.keys(asinMap).length}个ASIN列`);
+    
+    // 3. 处理计划文件
+    const shippingQuantityMap = {}; // ASIN到发货数量的映射
+    const replenishmentQuantityMap = {}; // ASIN到补货数量的映射
+    
+    const processShippingPlanFile = async (file) => {
+      if (!file) return;
+      
+      const reader = new FileReader();
+      return new Promise((resolve) => {
+        reader.onload = (e) => {
+          const data = new Uint8Array(e.target.result);
+          const workbook = XLSX.read(data, { type: 'array' });
+          const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+          const jsonData = XLSX.utils.sheet_to_json(worksheet);
+          
+          console.log('处理发货计划文件，行数:', jsonData.length);
+          
+          jsonData.forEach(row => {
+            const fnsku = row['FNSKU'];
+            const quantity = row['发货数(套)'] || 0;
+            
+            if (fnsku && quantity) {
+              const asin = fnskuToAsinMap[fnsku];
+              if (asin && asinMap[asin]) {
+                if (!shippingQuantityMap[asin]) {
+                  shippingQuantityMap[asin] = 0;
+                }
+                shippingQuantityMap[asin] += Number(quantity);
+              }
+            }
+          });
+          resolve();
+        };
+        reader.readAsArrayBuffer(file);
+      });
+    };
+    
+    const processReplenishmentPlanFile = async (file) => {
+      if (!file) return;
+      
+      const reader = new FileReader();
+      return new Promise((resolve) => {
+        reader.onload = (e) => {
+          const data = new Uint8Array(e.target.result);
+          const workbook = XLSX.read(data, { type: 'array' });
+          const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+          const jsonData = XLSX.utils.sheet_to_json(worksheet);
+          
+          console.log('处理补货计划文件，行数:', jsonData.length);
+          // 调试打印第一行数据，检查字段名
+          if (jsonData.length > 0) {
+            console.log('补货计划第一行数据示例:', JSON.stringify(jsonData[0]));
+          }
+          
+          jsonData.forEach(row => {
+            // 尝试多种可能的列名
+            const fnsku = row['FNSKU'] || row['fnsku'] || row['MSKU'] || row['msku'] || '';
+            // 尝试多种可能的列名
+            const quantity = row['发货数(套)'] || row['补货数量'] || row['补货数(套)'] || row['数量'] || 0;
+            
+            console.log(`补货数据: FNSKU=${fnsku}, 数量=${quantity}`);
+            
+            if (fnsku && quantity) {
+              const asin = fnskuToAsinMap[fnsku];
+              if (asin && asinMap[asin]) {
+                if (!replenishmentQuantityMap[asin]) {
+                  replenishmentQuantityMap[asin] = 0;
+                }
+                replenishmentQuantityMap[asin] += Number(quantity);
+                console.log(`补货数据映射成功: FNSKU=${fnsku}, ASIN=${asin}, 数量=${quantity}`);
+              } else {
+                console.log(`补货数据映射失败: FNSKU=${fnsku}, 未找到对应ASIN`);
+              }
+            }
+          });
+          resolve();
+        };
+        reader.readAsArrayBuffer(file);
+      });
+    };
+    
+    // 处理发货计划和补货计划
+    if (backfillFiles.value.shippingPlan) {
+      await processShippingPlanFile(backfillFiles.value.shippingPlan);
+    }
+    if (backfillFiles.value.replenishmentPlan) {
+      await processReplenishmentPlanFile(backfillFiles.value.replenishmentPlan);
+    }
+    
+    // 4. 准备数据用于表格展示（横向展示）
+    // 使用库存文件中的所有ASIN，并按原顺序排序
+    const sortedAsins = validAsins.sort((a, b) => asinMap[a].index - asinMap[b].index);
+    
+    // 设置表头（ASIN）
+    backfillResult.value.headers = sortedAsins;
+    
+    // 设置名称行
+    backfillResult.value.names = sortedAsins.map(asin => asinMap[asin].name || '');
+    
+    // 设置发货数量行（没有数据的填0）
+    backfillResult.value.shippingQuantities = sortedAsins.map(asin => shippingQuantityMap[asin] || 0);
+    
+    // 设置补货数量行（没有数据的填0）
+    backfillResult.value.replenishmentQuantities = sortedAsins.map(asin => replenishmentQuantityMap[asin] || 0);
+    
+    backfillResult.value.isProcessed = true;
+    
+    console.log('库存数据回填处理完成');
+    console.log('ASIN数量:', backfillResult.value.headers.length);
+    console.log('名称数量:', backfillResult.value.names.length);
+    console.log('发货数量行数组长度:', backfillResult.value.shippingQuantities.length);
+    console.log('补货数量行数组长度:', backfillResult.value.replenishmentQuantities.length);
+    
+    ElMessage.success('库存数据回填完成！');
+    
+  } catch (error) {
+    console.error('处理回填数据时出错:', error);
+    ElMessage.error('处理数据时出错: ' + error.message);
+  }
+};
+
+// 处理回填拖放
+function handleBackfillDrop(e) {
+  const dt = e.dataTransfer;
+  const files = dt.files;
+  handleBackfillFileUpload(files);
+}
+
+// 通过点击触发回填文件选择
+const triggerBackfillFileSelect = () => {
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.multiple = true;
+  fileInput.accept = '.csv,.xlsx,.xls';
+  fileInput.onchange = (e) => handleBackfillFileUpload(e.target.files);
+  fileInput.click();
+};
+
+// 获取回填文件列表用于显示
+const getBackfillFileList = () => {
+  const fileList = [];
+  
+  if (backfillFiles.value.shippingPlan) {
+    fileList.push({
+      name: backfillFiles.value.shippingPlan.name,
+      type: 'shippingPlan',
+      size: (backfillFiles.value.shippingPlan.size / 1024).toFixed(2) + ' KB',
+      status: 'uploaded'
+    });
+  }
+  
+  if (backfillFiles.value.replenishmentPlan) {
+    fileList.push({
+      name: backfillFiles.value.replenishmentPlan.name,
+      type: 'replenishmentPlan',
+      size: (backfillFiles.value.replenishmentPlan.size / 1024).toFixed(2) + ' KB',
+      status: 'uploaded'
+    });
+  }
+  
+  if (backfillFiles.value.inventoryFile) {
+    fileList.push({
+      name: backfillFiles.value.inventoryFile.name,
+      type: 'inventoryFile',
+      size: (backfillFiles.value.inventoryFile.size / 1024).toFixed(2) + ' KB',
+      status: 'uploaded'
+    });
+  }
+  
+  return fileList;
+};
+
+// 获取回填文件类型标签
+const getBackfillFileTypeLabel = (type) => {
+  switch (type) {
+    case 'shippingPlan':
+      return '发货计划';
+    case 'replenishmentPlan':
+      return '补货计划';
+    case 'inventoryFile':
+      return '库存文件';
+    default:
+      return '未知类型';
+  }
+};
+
+// 添加回填结果的状态变量
+const backfillResult = ref({
+  headers: [],
+  names: [],
+  shippingQuantities: [], // 发货数量
+  replenishmentQuantities: [], // 补货数量
+  isProcessed: false
+});
+
+// 重置回填结果
+const resetBackfillResult = () => {
+  backfillResult.value = {
+    headers: [],
+    names: [],
+    shippingQuantities: [], // 发货数量
+    replenishmentQuantities: [], // 补货数量
+    isProcessed: false
+  };
+};
+
+// 获取回填结果表格数据
+const getResultTableData = () => {
+  return backfillResult.value.shippingQuantities.map(quantity => ({
+    asin: backfillResult.value.headers[backfillResult.value.shippingQuantities.indexOf(quantity)],
+    quantity: quantity
+  }));
+};
+
+// 获取回填表格数据
+const getBackfillTableData = () => {
+  return [
+    { label: 'ASIN', values: backfillResult.value.headers },
+    { label: '名称', values: backfillResult.value.names },
+    { label: '发货数量', values: backfillResult.value.shippingQuantities },
+    { label: '补货数量', values: backfillResult.value.replenishmentQuantities }
+  ];
+};
+
+// 复制数量数据到剪贴板
+const copyQuantityData = () => {
+  try {
+    const type = window.confirm('点击"确定"复制发货数量，点击"取消"复制补货数量');
+    
+    // 根据用户选择获取不同的数据行
+    const quantities = type ? backfillResult.value.shippingQuantities : backfillResult.value.replenishmentQuantities;
+    
+    // 将数据格式化为Tab分隔的文本，便于粘贴到Excel
+    const textToCopy = quantities.join('\t');
+    
+    // 复制到剪贴板
+    navigator.clipboard.writeText(textToCopy)
+      .then(() => {
+        ElMessage.success(`${type ? '发货' : '补货'}数据已复制到剪贴板！`);
+      })
+      .catch(err => {
+        console.error('复制失败:', err);
+        ElMessage.error('复制失败，请重试');
+      });
+  } catch (error) {
+    console.error('复制数据时出错:', error);
+    ElMessage.error('复制数据时出错');
+  }
+};
+
+// 复制发货数据到剪贴板
+const copyShippingData = () => {
+  try {
+    // 获取发货数量行数据
+    const quantities = backfillResult.value.shippingQuantities;
+    
+    // 将数据格式化为Tab分隔的文本，便于粘贴到Excel
+    const textToCopy = quantities.join('\t');
+    
+    // 复制到剪贴板
+    navigator.clipboard.writeText(textToCopy)
+      .then(() => {
+        ElMessage.success('发货数据已复制到剪贴板！');
+      })
+      .catch(err => {
+        console.error('复制失败:', err);
+        ElMessage.error('复制失败，请重试');
+      });
+  } catch (error) {
+    console.error('复制数据时出错:', error);
+    ElMessage.error('复制数据时出错');
+  }
+};
+
+// 复制补货数据到剪贴板
+const copyReplenishmentData = () => {
+  try {
+    // 获取补货数量行数据
+    const quantities = backfillResult.value.replenishmentQuantities;
+    
+    // 将数据格式化为Tab分隔的文本，便于粘贴到Excel
+    const textToCopy = quantities.join('\t');
+    
+    // 复制到剪贴板
+    navigator.clipboard.writeText(textToCopy)
+      .then(() => {
+        ElMessage.success('补货数据已复制到剪贴板！');
+      })
+      .catch(err => {
+        console.error('复制失败:', err);
+        ElMessage.error('复制失败，请重试');
+      });
+  } catch (error) {
+    console.error('复制数据时出错:', error);
+    ElMessage.error('复制数据时出错');
+  }
+};
 </script>
 
 <template>
@@ -3188,6 +3654,10 @@ const processShipmentFile = async (csvContent, fileName, skuMap) => {
         <!-- 添加生成发票按钮 -->
         <el-button type="primary" @click="goToInvoicePage" style="margin-right: 15px;">
           生成发票
+        </el-button>
+        <!-- 添加回填库存数据按钮 -->
+        <el-button type="success" @click="goToBackfillPage" style="margin-right: 15px;">
+          回填库存数据
         </el-button>
         <el-button type="text" @click="resetUploads" :disabled="fileList.length === 0">
           重置
@@ -3674,6 +4144,148 @@ const processShipmentFile = async (csvContent, fileName, skuMap) => {
           >
             生成贴标文件
           </el-button>
+        </div>
+      </div>
+      
+      <!-- 回填库存数据页面 -->
+      <div v-else-if="currentPage === 'backfill'" class="backfill-section">
+        <div class="backfill-header">
+          <h2>回填库存数据</h2>
+          <p>上传发货计划、补货计划和库存文件，系统将自动生成库存回填表格</p>
+          <el-button @click="goToMainPage" size="small" style="margin-bottom: 15px;">
+            返回主页
+          </el-button>
+        </div>
+        
+        <!-- 拖拽上传文件区域 -->
+        <div 
+          class="drop-zone"
+          @dragenter.prevent
+          @dragover.prevent
+          @dragleave.prevent
+          @drop.prevent="handleBackfillDrop"
+          @click="triggerBackfillFileSelect"
+          v-if="!backfillResult.isProcessed"
+        >
+          <div class="drop-icon">
+            <el-icon><Upload /></el-icon>
+          </div>
+          <h3>拖拽文件到此处，或点击上传</h3>
+          <p>支持上传发货计划.xlsx、补货计划.xlsx和库存-喜悦仓库.csv</p>
+        </div>
+        
+        <!-- 已上传文件列表 -->
+        <div class="uploaded-files-section" v-if="(backfillFiles.shippingPlan || backfillFiles.replenishmentPlan || backfillFiles.inventoryFile) && !backfillResult.isProcessed">
+          <h3>已上传文件</h3>
+          <el-table :data="getBackfillFileList()" style="width: 100%">
+            <el-table-column prop="name" label="文件名" min-width="250"></el-table-column>
+            <el-table-column prop="type" label="类型" width="150">
+              <template #default="scope">
+                <span>{{ getBackfillFileTypeLabel(scope.row.type) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="size" label="文件大小" width="120"></el-table-column>
+            <el-table-column prop="status" label="状态" width="100">
+              <template #default="scope">
+                <el-tag type="success">已上传</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="100">
+              <template #default="scope">
+                <el-button 
+                  type="danger" 
+                  size="small" 
+                  circle
+                  @click="removeBackfillFile(scope.row.type)"
+                >
+                  <el-icon><Delete /></el-icon>
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+        
+        <!-- 处理按钮 -->
+        <div class="process-actions" v-if="!backfillResult.isProcessed">
+          <el-button 
+            type="primary" 
+            :disabled="!backfillFileReady.inventoryFile || (!backfillFileReady.shippingPlan && !backfillFileReady.replenishmentPlan)" 
+            @click="processBackfillData"
+            size="large"
+          >
+            生成库存回填表格
+          </el-button>
+        </div>
+        
+        <!-- 回填结果表格 -->
+        <div class="backfill-result-section" v-if="backfillResult.isProcessed">
+          <div class="result-header">
+            <h3>回填库存数据结果</h3>
+            <div class="result-actions">
+              <el-button type="primary" @click="resetBackfillResult" size="small">
+                返回上传
+              </el-button>
+            </div>
+          </div>
+          
+          <div class="result-table-container">
+            <!-- 表格和复制按钮容器 -->
+            <div class="table-with-actions">
+              <!-- 使用Element UI表格并冻结首列 -->
+              <el-table
+                :data="getBackfillTableData()"
+                border
+                style="width: 100%"
+                :max-height="500"
+              >
+                <!-- 固定的标签列 -->
+                <el-table-column
+                  prop="label"
+                  label="编号"
+                  width="80"
+                  fixed="left"
+                  align="center"
+                />
+                
+                <!-- 动态生成数据列 -->
+                <el-table-column
+                  v-for="(_, index) in backfillResult.headers"
+                  :key="index"
+                  :label="(index + 1).toString()"
+                  align="center"
+                  min-width="120"
+                >
+                  <template #default="scope">
+                    <span>{{ scope.row.values[index] }}</span>
+                  </template>
+                </el-table-column>
+              </el-table>
+              
+              <!-- 右侧复制按钮 -->
+              <div class="table-side-actions">
+                <el-button 
+                  type="primary" 
+                  @click="copyShippingData" 
+                  size="small"
+                  class="copy-button"
+                >
+                  <el-icon><Document /></el-icon>
+                  <span>复制发货数据</span>
+                </el-button>
+                
+                <el-button 
+                  type="success" 
+                  @click="copyReplenishmentData" 
+                  size="small"
+                  class="copy-button"
+                  style="margin-top: 10px;"
+                >
+                  <el-icon><Document /></el-icon>
+                  <span>复制补货数据</span>
+                </el-button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </main>
@@ -4539,4 +5151,121 @@ body {
   color: #606266;
   font-size: 1rem;
 }
+
+/* 回填库存数据页面样式 */
+.backfill-section {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.backfill-header {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.backfill-header h2 {
+  font-size: 1.8rem;
+  margin-bottom: 10px;
+  color: #303133;
+}
+
+.backfill-header p {
+  color: #606266;
+  font-size: 1rem;
+}
+
+/* 回填结果表格样式 */
+.backfill-result-section {
+  background-color: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+  padding: 1.5rem;
+  margin-top: 20px;
+}
+
+.result-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.result-header h3 {
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: #303133;
+  margin: 0;
+}
+
+.result-table-container {
+  margin-top: 15px;
+  overflow-x: auto;
+}
+
+/* 回填结果表格样式 */
+.result-table-grid {
+  display: flex;
+  align-items: stretch;
+}
+
+.row-labels {
+  width: 80px;
+  display: flex;
+  flex-direction: column;
+  margin-right: 2px;
+}
+
+.row-label {
+  height: 47px; /* 匹配表格行高 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+  background-color: #f5f7fa;
+  border: 1px solid #ebeef5;
+  border-right: none;
+}
+
+.header-label {
+  height: 48px; /* 匹配表头行高 */
+  background-color: #f5f7fa;
+  border-bottom: 1px solid #ebeef5;
+}
+
+.data-table {
+  flex: 1;
+  overflow-x: auto;
+}
+
+/* 确保表头单元格样式与行标签一致 */
+.el-table th.table-header-cell {
+  background-color: #f5f7fa;
+  font-weight: bold;
+}
+
+/* 表格和复制按钮布局 */
+.table-with-actions {
+  display: flex;
+  gap: 15px;
+  align-items: flex-start;
+}
+
+.table-with-actions .el-table {
+  flex: 1;
+}
+
+.table-side-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 42px; /* 与表格标题行对齐 */
+}
+
+.copy-button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
 </style>
+
