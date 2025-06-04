@@ -1164,12 +1164,19 @@ const generateReplenishmentTemplate = async () => {
           if (asin.match(/^B[\dA-Z]{9,}/i)) {
             // 获取需要的数据
             const productName = String(row.getCell(1).value || '').trim(); // 产品名称
+            const factoryInventory = Number(row.getCell(4).value || 0); // D列 - 工厂库存
             const tValue = Number(row.getCell(20).value || 0); // T列装箱数量
             
             // 获取UVW列的补货数据 - 这些是用于补货模版的
             const uValue = Number(row.getCell(21).value || 0); // U列 - 90天补货
             const vValue = Number(row.getCell(22).value || 0); // V列 - 主推款补货
             const wValue = Number(row.getCell(23).value || 0); // W列 - 特推款补货
+            
+            // 获取XYZ列的发货数据，用于计算补货前库存
+            const xValue = Number(row.getCell(24).value || 0); // X列 - 发货数据
+            const yValue = Number(row.getCell(25).value || 0); // Y列 - 发货数据
+            const zValue = Number(row.getCell(26).value || 0); // Z列 - 发货数据
+            const maxShippingValue = Math.max(xValue, yValue, zValue); // 最大发货数量
             
             // FNSKU在AE列 (31列，因为索引从1开始)
             const fnsku = String(row.getCell(31).value || '').trim(); // AE列(FNSKU)
@@ -1182,13 +1189,21 @@ const generateReplenishmentTemplate = async () => {
               // 计算所需箱数
               const boxCount = tValue > 0 ? Math.ceil(maxReplenishmentValue / tValue) : 0;
               
+              // 计算补货前库存（已发货）= 工厂库存 - 发货数量
+              const preReplenishmentInventory = Math.max(0, factoryInventory - maxShippingValue);
+              
+              // 计算补货后库存 = 补货前库存 + 补货数量
+              const postReplenishmentInventory = preReplenishmentInventory + maxReplenishmentValue;
+              
               replenishmentData.push({
                 name: productName,
                 fnsku: fnsku,
                 asin: asin,
                 boxQuantity: tValue, // 每箱数量
                 replenishmentQuantity: maxReplenishmentValue, // 补货数量
-                boxCount: boxCount // 总箱数
+                boxCount: boxCount, // 总箱数
+                preReplenishmentInventory: preReplenishmentInventory, // G列：补货前库存（已发货）
+                postReplenishmentInventory: postReplenishmentInventory // H列：补货后库存
               });
             }
           }
@@ -1210,6 +1225,9 @@ const generateReplenishmentTemplate = async () => {
       row.getCell(3).value = item.boxQuantity; // 每箱数量
       row.getCell(4).value = item.replenishmentQuantity; // 补货数(套)
       row.getCell(5).value = item.boxCount; // 共多少箱
+      // row.getCell(6).value = item.replenishmentQuantity; // F列：补货数量（兼容性保留）
+      row.getCell(7).value = item.preReplenishmentInventory; // G列：补货前库存（已发货）
+      row.getCell(8).value = item.postReplenishmentInventory; // H列：补货后库存
       
       currentRow++;
     });
@@ -1771,7 +1789,50 @@ const getShippingPreviewData = () => {
     const worksheet = processedTemplates.value.shippingTemplate.workbook.worksheets[0];
     const dataRows = [];
     
-    // 从第2行开始读取数据（跳过表头）
+    // 创建FNSKU到ASIN的映射，从结果文件中获取
+    const fnskuToAsinMap = {};
+    
+    console.log('开始建立FNSKU到ASIN映射...');
+    console.log('processedData.value.inventoryMap存在:', !!processedData.value.inventoryMap);
+    if (processedData.value.inventoryMap) {
+      console.log('inventoryMap键数量:', Object.keys(processedData.value.inventoryMap).length);
+      console.log('inventoryMap前5个键:', Object.keys(processedData.value.inventoryMap).slice(0, 5));
+      console.log('inventoryMap前5个值:', Object.values(processedData.value.inventoryMap).slice(0, 5));
+    }
+    
+    if (resultFileData.value && resultFileData.value.workbook) {
+      const resultWorksheet = resultFileData.value.workbook.worksheets[0];
+      console.log('结果文件存在，行数:', resultWorksheet.rowCount);
+      
+      // 从第2行开始读取产品库存数据，建立FNSKU到ASIN的映射
+      for (let rowNumber = 2; rowNumber <= resultWorksheet.rowCount; rowNumber++) {
+        const row = resultWorksheet.getRow(rowNumber);
+        
+        // 检查是否是有效的ASIN行
+        const asinCell = row.getCell(2);
+        if (!asinCell || !asinCell.value) continue;
+        
+        const asin = String(asinCell.value).trim();
+        if (!asin.match(/^B[\dA-Z]{9,}/i)) continue;
+        
+        // 获取FNSKU（从文件中的FNSKU列，在AE列）
+        const fnskuCell = row.getCell(31); // AE列是FNSKU列
+        const fnsku = fnskuCell ? String(fnskuCell.value || '').trim() : '';
+        
+        // 建立FNSKU到ASIN的映射
+        if (fnsku) {
+          fnskuToAsinMap[fnsku] = asin;
+          if (rowNumber <= 5) { // 只打印前几行作为样例
+            console.log(`映射建立: FNSKU ${fnsku} -> ASIN ${asin}`);
+          }
+        }
+      }
+    }
+    
+    console.log('FNSKU到ASIN映射完成，映射数量:', Object.keys(fnskuToAsinMap).length);
+    console.log('FNSKU映射前5个:', Object.entries(fnskuToAsinMap).slice(0, 5));
+    
+    // 从第2行开始读取发货模板数据（跳过表头）
     for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber++) {
       const row = worksheet.getRow(rowNumber);
       
@@ -1782,19 +1843,45 @@ const getShippingPreviewData = () => {
         continue;
       }
       
-      const fnsku = row.getCell(2).value;
-      const boxQuantity = row.getCell(3).value;
-      const shippingQuantity = row.getCell(4).value;
-      const boxCount = row.getCell(5).value;
+      const fnsku = String(row.getCell(2).value || '').trim();
+      const boxQuantity = Number(row.getCell(3).value || 0);
+      const shippingQuantity = Number(row.getCell(4).value || 0);
+      const boxCount = Number(row.getCell(5).value || 0);
+      
+      // 通过FNSKU找到对应的ASIN
+      const asin = fnskuToAsinMap[fnsku];
+      
+      console.log(`发货项目 ${rowNumber-1}:`);
+      console.log(`  - 名称: ${name}`);
+      console.log(`  - FNSKU: ${fnsku}`);
+      console.log(`  - 映射到的ASIN: ${asin}`);
+      
+      // 从喜悦库存数据中获取工厂库存（processedData.value.inventoryMap）
+      const originalFactoryInventory = (asin && processedData.value.inventoryMap) 
+        ? (processedData.value.inventoryMap[asin] || 0) 
+        : 0;
+      
+      console.log(`  - 喜悦库存中${asin}的工厂库存: ${originalFactoryInventory}`);
+      console.log(`  - 发货数量: ${shippingQuantity}`);
+      
+      // 计算发货后剩余的工厂库存 = 原工厂库存 - 发货数量
+      const remainingFactoryInventory = Math.max(0, originalFactoryInventory - shippingQuantity);
+      
+      console.log(`  - 剩余工厂库存: ${remainingFactoryInventory}`);
       
       dataRows.push({
         name: name,
         fnsku: fnsku,
+        asin: asin, // 添加ASIN字段用于调试
         boxQuantity: boxQuantity,
         shippingQuantity: shippingQuantity,
-        boxCount: boxCount
+        boxCount: boxCount,
+        factoryInventory: remainingFactoryInventory, // 显示剩余工厂库存
+        originalFactoryInventory: originalFactoryInventory // 保留原始工厂库存用于调试
       });
     }
+    
+    console.log('发货预览数据处理完成，总行数:', dataRows.length);
     
     // 按照发货数量排序，降序排列
     return dataRows.sort((a, b) => b.shippingQuantity - a.shippingQuantity);
@@ -1829,13 +1916,17 @@ const getReplenishmentPreviewData = () => {
       const boxQuantity = row.getCell(3).value;
       const replenishmentQuantity = row.getCell(4).value;
       const boxCount = row.getCell(5).value;
+      const preReplenishmentInventory = row.getCell(7).value || 0; // G列：补货前库存
+      const postReplenishmentInventory = row.getCell(8).value || 0; // H列：补货后库存
       
       dataRows.push({
         name: name,
         fnsku: fnsku,
         boxQuantity: boxQuantity,
         replenishmentQuantity: replenishmentQuantity,
-        boxCount: boxCount
+        boxCount: boxCount,
+        preReplenishmentInventory: preReplenishmentInventory, // 补货前库存
+        postReplenishmentInventory: postReplenishmentInventory // 补货后库存
       });
     }
     
@@ -3974,12 +4065,13 @@ const copyReplenishmentData = () => {
                     <table class="template-table">
                       <thead>
                         <tr>
-                          <th width="25%">名称</th>
-                          <th width="18%">FNSKU</th>
-                          <th width="15%">每箱数量</th>
-                          <th width="15%">发货数量</th>
-                          <th width="17%">共多少箱</th>
-                          <th width="10%">操作</th>
+                          <th width="20%">名称</th>
+                          <th width="15%">FNSKU</th>
+                          <th width="12%">每箱数量</th>
+                          <th width="12%">发货数量</th>
+                          <th width="12%">共多少箱</th>
+                          <th width="12%">发货后工厂库存</th>
+                          <th width="17%">操作</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -3989,15 +4081,23 @@ const copyReplenishmentData = () => {
                           <td>{{ row.boxQuantity || 0 }}</td>
                           <td class="shipping-qty">{{ row.shippingQuantity || 0 }}</td>
                           <td>{{ row.boxCount || 0 }}</td>
+                          <td>{{ row.factoryInventory || 0 }}</td>
                           <td>
                             <div class="action-buttons">
                               <el-button size="small" type="danger" @click="deleteShippingItem(row, index)">删除</el-button>
-                              <el-button size="small" type="primary" @click="makeItFiveBoxes(row, index)">凑5箱</el-button>
+                              <el-button 
+                                v-if="(row.boxCount || 0) <= 4 && (row.originalFactoryInventory || 0) >= (5 - (row.boxCount || 0)) * (row.boxQuantity || 0)"
+                                size="small" 
+                                type="primary" 
+                                @click="makeItFiveBoxes(row, index)"
+                              >
+                                凑5箱
+                              </el-button>
                             </div>
                           </td>
                         </tr>
                         <tr v-if="getShippingPreviewData().length === 0">
-                          <td colspan="6" class="no-data">没有需要发货的产品</td>
+                          <td colspan="7" class="no-data">没有需要发货的产品</td>
                         </tr>
                       </tbody>
                     </table>
