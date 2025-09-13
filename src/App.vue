@@ -2957,12 +2957,23 @@ const generateInvoiceForWarehouse = async (templateArrayBuffer, shipmentData, sk
     let totalQuantity = 0;
     let totalBoxes = 0;
     
-    items.forEach(item => {
+    console.log('=== 箱数统计调试信息 ===');
+    console.log(`处理的商品数量: ${items.length}`);
+    
+    items.forEach((item, index) => {
       totalQuantity += item.boxCount;
       totalBoxes += item.boxNumbers.length;
+      
+      console.log(`商品${index + 1}: ${item.name}`);
+      console.log(`  - SKU: ${item.sku}`);
+      console.log(`  - boxCount: ${item.boxCount}`);
+      console.log(`  - boxNumbers数量: ${item.boxNumbers ? item.boxNumbers.length : 0}`);
+      console.log(`  - boxNumbers: ${item.boxNumbers ? item.boxNumbers.join(', ') : '无'}`);
     });
     
+    console.log(`=== 最终统计 ===`);
     console.log(`商品总数量: ${totalQuantity}, 箱子总数: ${totalBoxes}`);
+    console.log(`预期箱数（从CSV）: 应该是23箱`);
     
     // 根据模版类型填写不同的单元格
     try {
@@ -3043,18 +3054,18 @@ const generateInvoiceForWarehouse = async (templateArrayBuffer, shipmentData, sk
       } else {
         // 赤道发票（原喜悦发票）模版填写
         worksheet.getCell('B1').value = fbaNumber; // 订单号码 (FBA编号)
-        console.log(`设置单元格B1(订单号码)为: ${fbaNumber}`);
-        
+      console.log(`设置单元格B1(订单号码)为: ${fbaNumber}`);
+      
         worksheet.getCell('B3').value = warehouseCode; // 地址号码 (仓库号)
-        console.log(`设置单元格B3(地址号码)为: ${warehouseCode}`);
-        worksheet.getCell('B4').value = warehouseCode;
-        console.log(`设置单元格B4(地址号码)为: ${warehouseCode}`);
-        
+      console.log(`设置单元格B3(地址号码)为: ${warehouseCode}`);
+      worksheet.getCell('B4').value = warehouseCode;
+      console.log(`设置单元格B4(地址号码)为: ${warehouseCode}`);
+      
         worksheet.getCell('B15').value = poNumber; // PO号码
-        console.log(`设置单元格B15(PO号码)为: ${poNumber}`);
-        
+      console.log(`设置单元格B15(PO号码)为: ${poNumber}`);
+      
         worksheet.getCell('B16').value = totalBoxes; // 箱子总数
-        console.log(`设置单元格B16(箱子总数)为: ${totalBoxes}`);
+      console.log(`设置单元格B16(箱子总数)为: ${totalBoxes}`);      
       }
     } catch (error) {
       console.error(`设置单元格值时出错:`, error);
@@ -3176,21 +3187,21 @@ const generateInvoiceForWarehouse = async (templateArrayBuffer, shipmentData, sk
           }
         } else {
           // 赤道发票（原喜悦发票）模版的列结构
-          row.getCell(1).value = fbaNumber; // 货箱编号
-          row.getCell(2).value = poNumber; // PO Number（卡派追踪编码）
-          row.getCell(3).value = defaultProductInfo.weight; // 货箱重量(KG)
-          row.getCell(4).value = boxLength; // 货箱长度(CM)
-          row.getCell(5).value = boxWidth; // 货箱宽度(CM)
-          row.getCell(6).value = boxHeight; // 货箱高度(CM)
-          row.getCell(7).value = defaultProductInfo.englishName; // 产品英文品名
-          row.getCell(8).value = defaultProductInfo.chineseName; // 产品中文品名
-          row.getCell(9).value = defaultProductInfo.declaredPrice; // 产品申报单价
-          row.getCell(10).value = boxQuantity > 0 ? boxQuantity : 1; // 使用装箱数量作为申报数量，如果为0则默认为1
-          row.getCell(11).value = defaultProductInfo.material; // 产品材质
-          row.getCell(12).value = defaultProductInfo.customsCode; // 产品海关编码
-          row.getCell(13).value = defaultProductInfo.usage; // 产品用途
-          row.getCell(14).value = defaultProductInfo.brand; // 产品品牌
-          row.getCell(15).value = defaultProductInfo.model; // 产品型号
+        row.getCell(1).value = fbaNumber; // 货箱编号
+        row.getCell(2).value = poNumber; // PO Number（卡派追踪编码）
+        row.getCell(3).value = defaultProductInfo.weight; // 货箱重量(KG)
+        row.getCell(4).value = boxLength; // 货箱长度(CM)
+        row.getCell(5).value = boxWidth; // 货箱宽度(CM)
+        row.getCell(6).value = boxHeight; // 货箱高度(CM)
+        row.getCell(7).value = defaultProductInfo.englishName; // 产品英文品名
+        row.getCell(8).value = defaultProductInfo.chineseName; // 产品中文品名
+        row.getCell(9).value = defaultProductInfo.declaredPrice; // 产品申报单价
+        row.getCell(10).value = boxQuantity > 0 ? boxQuantity : 1; // 使用装箱数量作为申报数量，如果为0则默认为1
+        row.getCell(11).value = defaultProductInfo.material; // 产品材质
+        row.getCell(12).value = defaultProductInfo.customsCode; // 产品海关编码
+        row.getCell(13).value = defaultProductInfo.usage; // 产品用途
+        row.getCell(14).value = defaultProductInfo.brand; // 产品品牌
+        row.getCell(15).value = defaultProductInfo.model; // 产品型号
         }
         
         currentRow++;
@@ -3398,6 +3409,70 @@ const processShipmentFile = async (csvContent, fileName, skuMap) => {
       console.log(`- 匹配的SKU数量: ${matchedSkuCount}`);
       console.log(`- 未匹配的SKU数量: ${unmatchedSkuCount}`);
       console.log(`- 总商品数量: ${result.length}`);
+      
+      // 统计总箱数（从CSV原始数据）
+      let totalBoxesMatched = 0;
+      
+      console.log('=== CSV箱数统计调试 ===');
+      result.forEach((item, index) => {
+        console.log(`匹配商品${index + 1}: ${item.name}`);
+        console.log(`  - SKU: ${item.sku}`);
+        console.log(`  - 箱数: ${item.boxNumbers.length}`);
+        console.log(`  - 箱号: ${item.boxNumbers.join(', ')}`);
+        totalBoxesMatched += item.boxNumbers.length;
+      });
+      
+      console.log(`匹配商品的总箱数: ${totalBoxesMatched}`);
+      
+      // 统计未匹配SKU的箱数
+      let unmatchedBoxCount = 0;
+      const unmatchedDetails = [];
+      
+      // 重新解析CSV来统计未匹配的箱数
+      const csvLines = csvContent.split('\n');
+      let dataStartRow = -1;
+      
+      for (let i = 0; i < csvLines.length; i++) {
+        const line = csvLines[i].trim();
+        if (line.includes('SKU') && line.includes('箱号')) {
+          dataStartRow = i + 1;
+          break;
+        }
+      }
+      
+      if (dataStartRow !== -1) {
+        for (let i = dataStartRow; i < csvLines.length; i++) {
+          const line = csvLines[i].trim();
+          if (!line) continue;
+          
+          const columns = line.split(',');
+          if (columns.length < 18) continue;
+          
+          const sku = columns[0]?.replace(/"/g, '').trim();
+          const boxCount = parseInt(columns[15]?.replace(/"/g, '').trim()) || 0;
+          const boxNumbers = columns[17]?.replace(/"/g, '').trim();
+          
+          if (sku && !skuMap[sku]) {
+            const actualBoxCount = boxNumbers ? boxNumbers.split(',').length : boxCount;
+            unmatchedBoxCount += actualBoxCount;
+            unmatchedDetails.push({
+              sku: sku,
+              boxCount: actualBoxCount,
+              boxNumbers: boxNumbers
+            });
+          }
+        }
+      }
+      
+      console.log(`=== 未匹配SKU详情 ===`);
+      unmatchedDetails.forEach((item, index) => {
+        console.log(`未匹配${index + 1}: SKU=${item.sku}`);
+        console.log(`  - 箱数: ${item.boxCount}`);
+        console.log(`  - 箱号: ${item.boxNumbers}`);
+      });
+      
+      console.log(`未匹配商品的总箱数: ${unmatchedBoxCount}`);
+      console.log(`总箱数 = 匹配箱数(${totalBoxesMatched}) + 未匹配箱数(${unmatchedBoxCount}) = ${totalBoxesMatched + unmatchedBoxCount}`);
       
       if (result.length > 0) {
         console.log('处理结果样例:');
