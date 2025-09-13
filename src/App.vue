@@ -2565,6 +2565,7 @@ watch(
 // 添加生成发票页面相关数据和方法
 const invoiceFileList = ref([]);
 const invoiceReady = ref(false);
+const selectedInvoiceTemplate = ref('jinsheng'); // 'xiyue' 为赤道发票，'jinsheng' 为锦盛天成发票
 
 // 识别发货文件类型
 const identifyInvoiceFileType = (file) => {
@@ -2851,7 +2852,7 @@ const generateInvoiceFile = async () => {
     FileSaver.saveAs(blob, `贴标_${new Date().toISOString().substring(0, 10)}.xlsx`);
     
     // 为每个仓库生成发票
-    await generateInvoicesForWarehouses(warehouseShipments, skuMap);
+    await generateInvoicesForWarehouses(warehouseShipments, skuMap, selectedInvoiceTemplate.value);
     
     ElMessage.success('贴标文件和发票文件生成成功');
   } catch (error) {
@@ -2904,12 +2905,16 @@ const parseFilename = (filename) => {
 };
 
 // 为每个仓库生成发票
-const generateInvoicesForWarehouses = async (warehouseShipments, skuMap) => {
+const generateInvoicesForWarehouses = async (warehouseShipments, skuMap, templateType = 'xiyue') => {
   try {
     console.log('开始为仓库生成发票，仓库数量:', Object.keys(warehouseShipments).length);
+    console.log('使用模版类型:', templateType);
+    
+    // 根据模版类型选择不同的模版文件
+    const templateFileName = templateType === 'jinsheng' ? '/锦盛天成发票.xlsx' : '/喜悦发票.xlsx';
     
     // 加载发票模板
-    const response = await fetch('/喜悦发票.xlsx');
+    const response = await fetch(templateFileName);
     if (!response.ok) {
       throw new Error(`获取发票模板失败: ${response.status} ${response.statusText}`);
     }
@@ -2927,7 +2932,7 @@ const generateInvoicesForWarehouses = async (warehouseShipments, skuMap) => {
         continue;
       }
       
-      await generateInvoiceForWarehouse(arrayBuffer, shipmentData, skuMap);
+      await generateInvoiceForWarehouse(arrayBuffer, shipmentData, skuMap, templateType);
     }
   } catch (error) {
     console.error('生成发票文件时出错:', error);
@@ -2936,7 +2941,7 @@ const generateInvoicesForWarehouses = async (warehouseShipments, skuMap) => {
 };
 
 // 为单个仓库生成发票
-const generateInvoiceForWarehouse = async (templateArrayBuffer, shipmentData, skuMap) => {
+const generateInvoiceForWarehouse = async (templateArrayBuffer, shipmentData, skuMap, templateType = 'xiyue') => {
   try {
     const { fbaNumber, poNumber, warehouseCode, items } = shipmentData;
     console.log(`为仓库 ${warehouseCode} 生成发票，FBA编号: ${fbaNumber}, PO号: ${poNumber}, 物品数量: ${items.length}`);
@@ -2959,31 +2964,104 @@ const generateInvoiceForWarehouse = async (templateArrayBuffer, shipmentData, sk
     
     console.log(`商品总数量: ${totalQuantity}, 箱子总数: ${totalBoxes}`);
     
-    // 直接设置单元格的值，不使用占位符替换
+    // 根据模版类型填写不同的单元格
     try {
-      // 订单号码 (FBA编号)
-      worksheet.getCell('B1').value = fbaNumber;
-      console.log(`设置单元格B1(订单号码)为: ${fbaNumber}`);
-      
-      // 地址号码 (仓库号)
-      worksheet.getCell('B3').value = warehouseCode;
-      console.log(`设置单元格B3(地址号码)为: ${warehouseCode}`);
-      worksheet.getCell('B4').value = warehouseCode;
-      console.log(`设置单元格B4(地址号码)为: ${warehouseCode}`);
-      
-      // PO号码
-      worksheet.getCell('B15').value = poNumber;
-      console.log(`设置单元格B15(PO号码)为: ${poNumber}`);
-      
-      // 箱子总数
-      worksheet.getCell('B16').value = totalBoxes;
-      console.log(`设置单元格B16(箱子总数)为: ${totalBoxes}`);      
+      if (templateType === 'jinsheng') {
+        // 锦盛天成发票模版填写
+        worksheet.getCell('B1').value = fbaNumber; // FBA编号
+        console.log(`设置单元格B1(FBA编号)为: ${fbaNumber}`);
+        
+        worksheet.getCell('B2').value = '美国准时达'; // 固定值
+        console.log(`设置单元格B2为: 美国准时达`);
+        
+        // B3需要从Sheet1表格查找对应的地址简称，并同时获取其他VLOOKUP公式需要的值
+        let addressCode = '';
+        let vlookupValues = {}; // 存储各个列的查找结果
+        
+        try {
+          // 查找隐藏的Sheet1工作表
+          const sheet1 = workbook.worksheets.find(ws => ws.name === 'Sheet1');
+          if (sheet1) {
+            console.log('找到Sheet1工作表，开始查找仓库代码对应的地址简称和相关数据');
+            
+            // 遍历Sheet1的行，在C列查找warehouseCode
+            for (let rowNumber = 1; rowNumber <= sheet1.rowCount; rowNumber++) {
+              const row = sheet1.getRow(rowNumber);
+              const cColumnValue = row.getCell(3).value; // C列
+              
+              if (cColumnValue && cColumnValue.toString() === warehouseCode) {
+                // 找到匹配的行，获取各列的值
+                const aColumnValue = row.getCell(1).value; // A列（地址简称）
+                if (aColumnValue) {
+                  addressCode = aColumnValue.toString();
+                  console.log(`找到匹配项：仓库代码${warehouseCode} -> 地址简称${addressCode}`);
+                  
+                  // 获取VLOOKUP公式需要的各列值
+                  vlookupValues.col4 = row.getCell(4).value || ''; // 第4列 -> B4
+                  vlookupValues.col6 = row.getCell(6).value || ''; // 第6列 -> B13
+                  vlookupValues.col8 = row.getCell(8).value || ''; // 第8列 -> B6
+                  vlookupValues.col11 = row.getCell(11).value || ''; // 第11列 -> B9
+                  vlookupValues.col12 = row.getCell(12).value || ''; // 第12列 -> B10
+                  vlookupValues.col13 = row.getCell(13).value || ''; // 第13列 -> B12
+                  vlookupValues.col14 = row.getCell(14).value || ''; // 第14列 -> B11
+                  
+                  console.log('获取到VLOOKUP相关数据:', vlookupValues);
+                  break;
+                }
+              }
+            }
+          } else {
+            console.warn('未找到Sheet1工作表');
+          }
+        } catch (lookupError) {
+          console.error('查找地址简称时出错:', lookupError);
+        }
+        
+        // 填写B3和相关的VLOOKUP公式结果
+        worksheet.getCell('B3').value = addressCode; // 地址简称
+        console.log(`设置单元格B3(地址简称)为: ${addressCode}`);
+        
+        // 填写VLOOKUP公式的结果
+        worksheet.getCell('B4').value = vlookupValues.col4; // VLOOKUP(B3,Sheet1!A:N,4,FALSE)
+        worksheet.getCell('B6').value = vlookupValues.col8; // VLOOKUP(B3,Sheet1!A:N,8,FALSE)
+        worksheet.getCell('B9').value = vlookupValues.col11; // VLOOKUP(B3,Sheet1!A:N,11,FALSE)
+        worksheet.getCell('B10').value = vlookupValues.col12; // VLOOKUP(B3,Sheet1!A:N,12,FALSE)
+        worksheet.getCell('B11').value = vlookupValues.col14; // VLOOKUP(B3,Sheet1!A:N,14,FALSE)
+        worksheet.getCell('B12').value = vlookupValues.col13; // VLOOKUP(B3,Sheet1!A:N,13,FALSE)
+        worksheet.getCell('B13').value = vlookupValues.col6; // VLOOKUP(B3,Sheet1!A:N,6,FALSE)
+        
+        console.log('已填写所有VLOOKUP公式结果');
+        
+        worksheet.getCell('B15').value = poNumber; // PO号码
+        console.log(`设置单元格B15(PO号码)为: ${poNumber}`);
+        
+        worksheet.getCell('B23').value = totalBoxes; // 箱子总数
+        console.log(`设置单元格B23(箱子总数)为: ${totalBoxes}`);
+        
+        worksheet.getCell('B24').value = warehouseCode; // 仓库号（重复填写）
+        console.log(`设置单元格B24(仓库号)为: ${warehouseCode}`);
+      } else {
+        // 赤道发票（原喜悦发票）模版填写
+        worksheet.getCell('B1').value = fbaNumber; // 订单号码 (FBA编号)
+        console.log(`设置单元格B1(订单号码)为: ${fbaNumber}`);
+        
+        worksheet.getCell('B3').value = warehouseCode; // 地址号码 (仓库号)
+        console.log(`设置单元格B3(地址号码)为: ${warehouseCode}`);
+        worksheet.getCell('B4').value = warehouseCode;
+        console.log(`设置单元格B4(地址号码)为: ${warehouseCode}`);
+        
+        worksheet.getCell('B15').value = poNumber; // PO号码
+        console.log(`设置单元格B15(PO号码)为: ${poNumber}`);
+        
+        worksheet.getCell('B16').value = totalBoxes; // 箱子总数
+        console.log(`设置单元格B16(箱子总数)为: ${totalBoxes}`);
+      }
     } catch (error) {
       console.error(`设置单元格值时出错:`, error);
     }
     
-    // 从第18行开始填写商品信息
-    const startRow = 18;
+    // 根据模版类型确定商品信息填写的起始行
+    const startRow = templateType === 'jinsheng' ? 26 : 18;
     let currentRow = startRow;
     
     // 按商品名称排序
@@ -3010,6 +3088,21 @@ const generateInvoiceForWarehouse = async (templateArrayBuffer, shipmentData, sk
       if (boxNumbers.length === 0) {
         // 如果没有箱号信息，至少创建一行
         boxNumbers.push('');
+      } else {
+        // 对货箱编号进行从小到大排序
+        boxNumbers.sort((a, b) => {
+          // 提取字符串末尾的数字部分（最简单可靠的方法）
+          const getLastNumber = (str) => {
+            const match = str.match(/(\d+)$/);
+            return match ? parseInt(match[1]) : 0;
+          };
+          
+          const numA = getLastNumber(a);
+          const numB = getLastNumber(b);
+          
+          // 直接比较末尾数字
+          return numA - numB;
+        });
       }
       
       // 获取SKU对应的产品信息
@@ -3027,22 +3120,78 @@ const generateInvoiceForWarehouse = async (templateArrayBuffer, shipmentData, sk
         const boxNumber = boxNumbers[i];
         const row = worksheet.getRow(currentRow);
         
-        // 根据参考代码填充单元格
-        row.getCell(1).value = fbaNumber; // 货箱编号
-        row.getCell(2).value = poNumber; // PO Number（卡派追踪编码）
-        row.getCell(3).value = defaultProductInfo.weight; // 货箱重量(KG)
-        row.getCell(4).value = boxLength; // 货箱长度(CM)
-        row.getCell(5).value = boxWidth; // 货箱宽度(CM)
-        row.getCell(6).value = boxHeight; // 货箱高度(CM)
-        row.getCell(7).value = defaultProductInfo.englishName; // 产品英文品名
-        row.getCell(8).value = defaultProductInfo.chineseName; // 产品中文品名
-        row.getCell(9).value = defaultProductInfo.declaredPrice; // 产品申报单价
-        row.getCell(10).value = boxQuantity > 0 ? boxQuantity : 1; // 使用装箱数量作为申报数量，如果为0则默认为1
-        row.getCell(11).value = defaultProductInfo.material; // 产品材质
-        row.getCell(12).value = defaultProductInfo.customsCode; // 产品海关编码
-        row.getCell(13).value = defaultProductInfo.usage; // 产品用途
-        row.getCell(14).value = defaultProductInfo.brand; // 产品品牌
-        row.getCell(15).value = defaultProductInfo.model; // 产品型号
+        if (templateType === 'jinsheng') {
+          // 锦盛天成发票模版的列结构（从第26行开始）
+          // 货箱编号*	PO Number*	货箱重量(KG)*	货箱长度(CM)*	货箱宽度(CM)*	货箱高度(CM)*	产品中文品名*	产品英文品名*	产品申报单价*	币种单位*	产品申报数量*（填写单箱数量）	产品材质*（英文/中文）	产品用途*（英文/中文）、产品海关编码*	产品带电*（是或否）	产品销售链接	产品品牌	产品型号	产品重量(kg)	尺寸、产品图片*
+          row.getCell(1).value = boxNumber; // 货箱编号
+          row.getCell(2).value = poNumber; // PO Number
+          row.getCell(3).value = defaultProductInfo.weight; // 货箱重量(KG)
+          row.getCell(4).value = boxLength; // 货箱长度(CM)
+          row.getCell(5).value = boxWidth; // 货箱宽度(CM)
+          row.getCell(6).value = boxHeight; // 货箱高度(CM)
+          row.getCell(7).value = defaultProductInfo.chineseName; // 产品中文品名
+          row.getCell(8).value = defaultProductInfo.englishName; // 产品英文品名
+          row.getCell(9).value = defaultProductInfo.declaredPrice; // 产品申报单价
+          row.getCell(10).value = 'USD'; // 币种单位
+          row.getCell(11).value = boxQuantity > 0 ? boxQuantity : 1; // 产品申报数量（单箱数量）
+          row.getCell(12).value = defaultProductInfo.material; // 产品材质
+          row.getCell(13).value = defaultProductInfo.usage; // 产品用途
+          row.getCell(14).value = defaultProductInfo.customsCode; // 产品海关编码
+          row.getCell(15).value = '否'; // 产品带电（默认否）
+          row.getCell(16).value = '/'; // 产品销售链接
+          row.getCell(17).value = '/'; // 产品品牌
+          row.getCell(18).value = '/'; // 产品型号
+          row.getCell(19).value = '/'; // 产品重量(kg)
+          row.getCell(20).value = '/'; // 尺寸
+          
+          // 复制U26单元格的图片到当前行的U列
+          try {
+            // 查找工作表中U26位置的图片
+            const templateImages = worksheet.getImages();
+            let templateImage = null;
+            
+            // 查找位于U26单元格的图片
+            for (const img of templateImages) {
+              if (img.range && img.range.tl && 
+                  img.range.tl.col === 20 && img.range.tl.row === 25) { // U列=20, 第26行=25 (0-based)
+                templateImage = img;
+                break;
+              }
+            }
+            
+            // 如果找到模版图片，复制到当前行
+            if (templateImage) {
+              const newImageId = worksheet.addImage(templateImage.imageId, {
+                tl: { col: 20, row: currentRow - 1 }, // U列，当前行 (0-based)
+                br: { col: 21, row: currentRow }, // 图片范围
+                editAs: 'absolute'
+              });
+              console.log(`复制图片到第${currentRow}行U列，图片ID: ${newImageId}`);
+            } else {
+              row.getCell(21).value = ''; // 没有找到模版图片，填空值
+            }
+          } catch (imageError) {
+            console.warn('复制图片时出错:', imageError);
+            row.getCell(21).value = ''; // 如果复制失败，填空值
+          }
+        } else {
+          // 赤道发票（原喜悦发票）模版的列结构
+          row.getCell(1).value = fbaNumber; // 货箱编号
+          row.getCell(2).value = poNumber; // PO Number（卡派追踪编码）
+          row.getCell(3).value = defaultProductInfo.weight; // 货箱重量(KG)
+          row.getCell(4).value = boxLength; // 货箱长度(CM)
+          row.getCell(5).value = boxWidth; // 货箱宽度(CM)
+          row.getCell(6).value = boxHeight; // 货箱高度(CM)
+          row.getCell(7).value = defaultProductInfo.englishName; // 产品英文品名
+          row.getCell(8).value = defaultProductInfo.chineseName; // 产品中文品名
+          row.getCell(9).value = defaultProductInfo.declaredPrice; // 产品申报单价
+          row.getCell(10).value = boxQuantity > 0 ? boxQuantity : 1; // 使用装箱数量作为申报数量，如果为0则默认为1
+          row.getCell(11).value = defaultProductInfo.material; // 产品材质
+          row.getCell(12).value = defaultProductInfo.customsCode; // 产品海关编码
+          row.getCell(13).value = defaultProductInfo.usage; // 产品用途
+          row.getCell(14).value = defaultProductInfo.brand; // 产品品牌
+          row.getCell(15).value = defaultProductInfo.model; // 产品型号
+        }
         
         currentRow++;
       }
@@ -3051,7 +3200,8 @@ const generateInvoiceForWarehouse = async (templateArrayBuffer, shipmentData, sk
     // 生成并下载Excel文件
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    FileSaver.saveAs(blob, `发票_${warehouseCode}_${fbaNumber}_${new Date().toISOString().substring(0, 10)}.xlsx`);
+    const templateName = templateType === 'jinsheng' ? '锦盛天成发票' : '赤道发票';
+    FileSaver.saveAs(blob, `${templateName}_${warehouseCode}_${fbaNumber}_${new Date().toISOString().substring(0, 10)}.xlsx`);
     
     console.log(`仓库 ${warehouseCode} 的发票生成成功`);
   } catch (error) {
@@ -4183,6 +4333,15 @@ const copyReplenishmentData = () => {
           <el-button @click="goToMainPage" size="small" style="margin-bottom: 15px;">
             返回主页
           </el-button>
+          
+          <!-- 发票模版选择 -->
+          <div class="template-selection" style="margin: 20px 0;">
+            <h3 style="margin-bottom: 10px;">选择发票模版</h3>
+            <el-radio-group v-model="selectedInvoiceTemplate" style="display: flex; gap: 20px;">
+              <el-radio label="xiyue" size="large">赤道发票</el-radio>
+              <el-radio label="jinsheng" size="large">锦盛天成发票</el-radio>
+            </el-radio-group>
+          </div>
         </div>
         
         <!-- 拖拽上传发货文件区域 -->
