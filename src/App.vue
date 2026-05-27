@@ -61,6 +61,40 @@ const finalDailyAvgCoefficient = ref(1.25);
 // 添加页面状态变量，用于控制显示哪个页面
 const currentPage = ref('main'); // 'main' 或 'invoice'
 
+// 有些导出的xlsx文件会把工作表有效范围(!ref)错误写成A1，
+// 但实际单元格仍然存在。先用真实单元格地址重建范围，避免sheet_to_json只读到A1。
+const getWorksheetRows = (worksheet) => {
+  const cellAddresses = Object.keys(worksheet).filter(key => !key.startsWith('!'));
+  if (cellAddresses.length === 0) {
+    return [];
+  }
+
+  const range = cellAddresses.reduce((acc, address) => {
+    const cell = XLSX.utils.decode_cell(address);
+    return {
+      s: {
+        r: Math.min(acc.s.r, cell.r),
+        c: Math.min(acc.s.c, cell.c)
+      },
+      e: {
+        r: Math.max(acc.e.r, cell.r),
+        c: Math.max(acc.e.c, cell.c)
+      }
+    };
+  }, {
+    s: { r: Number.MAX_SAFE_INTEGER, c: Number.MAX_SAFE_INTEGER },
+    e: { r: 0, c: 0 }
+  });
+
+  const fixedRef = XLSX.utils.encode_range(range);
+  if (worksheet['!ref'] !== fixedRef) {
+    console.warn(`修正工作表范围: ${worksheet['!ref'] || '空'} -> ${fixedRef}`);
+    worksheet['!ref'] = fixedRef;
+  }
+
+  return XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+};
+
 // 自动判断文件类型函数
 const identifyFileType = (file) => {
   const fileName = file.name.toLowerCase();
@@ -70,8 +104,11 @@ const identifyFileType = (file) => {
     return 'xiyue';
   }
   
-  // FBA库存文件判断 - "FBAInventory"开头的xlsx
-  if (fileName.startsWith('fbainventory') && (fileName.endsWith('.xlsx') || fileName.endsWith('.xls'))) {
+  // FBA库存文件判断 - 支持SellFox导出的FBAInventory或中文"FBA库存"命名
+  if (
+    (fileName.startsWith('fbainventory') || fileName.includes('fba库存')) &&
+    (fileName.endsWith('.xlsx') || fileName.endsWith('.xls'))
+  ) {
     return 'fba';
   }
   
@@ -355,7 +392,7 @@ const processXiyueInventory = async (file) => {
           
           const firstSheetName = workbook.SheetNames[0];
           const worksheet = workbook.Sheets[firstSheetName];
-          const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+          const jsonData = getWorksheetRows(worksheet);
           
           // 根据截图的确认，ASIN在第3行，剩余库存在第5行
           // 索引从0开始，所以实际为索引2和4
@@ -479,7 +516,7 @@ const processFBAInventory = async (file) => {
           
           const firstSheetName = workbook.SheetNames[0];
           const worksheet = workbook.Sheets[firstSheetName];
-          const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+          const jsonData = getWorksheetRows(worksheet);
           
           // 查找表头行和关键列索引
           let headerRowIndex = -1;
@@ -5602,4 +5639,3 @@ body {
   gap: 5px;
 }
 </style>
-
