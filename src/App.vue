@@ -63,10 +63,10 @@ const currentPage = ref('main'); // 'main' 或 'invoice'
 
 // 有些导出的xlsx文件会把工作表有效范围(!ref)错误写成A1，
 // 但实际单元格仍然存在。先用真实单元格地址重建范围，避免sheet_to_json只读到A1。
-const getWorksheetRows = (worksheet) => {
+const fixWorksheetRange = (worksheet) => {
   const cellAddresses = Object.keys(worksheet).filter(key => !key.startsWith('!'));
   if (cellAddresses.length === 0) {
-    return [];
+    return;
   }
 
   const range = cellAddresses.reduce((acc, address) => {
@@ -91,8 +91,16 @@ const getWorksheetRows = (worksheet) => {
     console.warn(`修正工作表范围: ${worksheet['!ref'] || '空'} -> ${fixedRef}`);
     worksheet['!ref'] = fixedRef;
   }
+};
 
-  return XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+const getWorksheetRows = (worksheet) => {
+  fixWorksheetRange(worksheet);
+  return XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+};
+
+const getWorksheetObjects = (worksheet) => {
+  fixWorksheetRange(worksheet);
+  return XLSX.utils.sheet_to_json(worksheet, { defval: '' });
 };
 
 // 自动判断文件类型函数
@@ -588,7 +596,7 @@ const processFBAInventory = async (file) => {
             const row = jsonData[i];
             if (!row || row.length <= asinColIndex) continue;
             
-            const asin = String(row[asinColIndex] || '').trim();
+            const asin = String(row[asinColIndex] || '').trim().toUpperCase();
             if (!asin || asin.length < 5) continue; // 跳过无效ASIN
             
             // 获取各个值，默认为0
@@ -648,7 +656,7 @@ const processSevenDayAnalysis = async (file) => {
           
           const firstSheetName = workbook.SheetNames[0];
           const worksheet = workbook.Sheets[firstSheetName];
-          const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+          const jsonData = getWorksheetRows(worksheet);
           
           // ASIN列通常在第2列
           const asinColIndex = 1; // 第2列ASIN
@@ -700,7 +708,7 @@ const processSevenDayAnalysis = async (file) => {
             const row = jsonData[i];
             if (!row || row.length <= asinColIndex) continue;
             
-            const asin = String(row[asinColIndex] || '').trim();
+            const asin = String(row[asinColIndex] || '').trim().toUpperCase();
             if (!asin || asin.length < 5) continue; // 跳过无效ASIN
             
             // 获取平均销量值，默认为0
@@ -759,7 +767,7 @@ const processThirtyDayAnalysis = async (file) => {
           
           const firstSheetName = workbook.SheetNames[0];
           const worksheet = workbook.Sheets[firstSheetName];
-          const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+          const jsonData = getWorksheetRows(worksheet);
           
           // ASIN列通常在第2列
           const asinColIndex = 1; // 第2列ASIN
@@ -811,7 +819,7 @@ const processThirtyDayAnalysis = async (file) => {
             const row = jsonData[i];
             if (!row || row.length <= asinColIndex) continue;
             
-            const asin = String(row[asinColIndex] || '').trim();
+            const asin = String(row[asinColIndex] || '').trim().toUpperCase();
             if (!asin || asin.length < 5) continue; // 跳过无效ASIN
             
             // 获取平均销量值，默认为0
@@ -3646,7 +3654,7 @@ const processBackfillData = async () => {
     
     const baseWorkbook = XLSX.read(new Uint8Array(baseFileArrayBuffer), { type: 'array' });
     const baseSheet = baseWorkbook.Sheets[baseWorkbook.SheetNames[0]];
-    const baseData = XLSX.utils.sheet_to_json(baseSheet);
+    const baseData = getWorksheetObjects(baseSheet);
     
     // 创建FNSKU到ASIN的映射
     const fnskuToAsinMap = {};
@@ -3665,7 +3673,7 @@ const processBackfillData = async () => {
         const csvContent = e.target.result;
         const workbook = XLSX.read(csvContent, { type: 'string' });
         const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-        resolve(XLSX.utils.sheet_to_json(worksheet, { header: 1 }));
+        resolve(getWorksheetRows(worksheet));
       };
       inventoryReader.readAsText(backfillFiles.value.inventoryFile);
     });
@@ -3707,7 +3715,7 @@ const processBackfillData = async () => {
           const data = new Uint8Array(e.target.result);
           const workbook = XLSX.read(data, { type: 'array' });
           const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-          const jsonData = XLSX.utils.sheet_to_json(worksheet);
+          const jsonData = getWorksheetObjects(worksheet);
           
           console.log('处理发货计划文件，行数:', jsonData.length);
           
@@ -3740,7 +3748,7 @@ const processBackfillData = async () => {
           const data = new Uint8Array(e.target.result);
           const workbook = XLSX.read(data, { type: 'array' });
           const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-          const jsonData = XLSX.utils.sheet_to_json(worksheet);
+          const jsonData = getWorksheetObjects(worksheet);
           
           console.log('处理补货计划文件，行数:', jsonData.length);
           // 调试打印第一行数据，检查字段名
